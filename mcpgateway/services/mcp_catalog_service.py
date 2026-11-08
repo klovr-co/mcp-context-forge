@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from mcpgateway.config import settings
 from mcpgateway.db import Gateway, Prompt, Resource, server_prompt_association, server_resource_association, server_tool_association, Tool
 from mcpgateway.observability import create_span, set_span_attribute
+from mcpgateway.plugins.tool_list import filter_listed_tools
 from mcpgateway.services.prompt_service import PromptService
 from mcpgateway.services.resource_service import ResourceService
 from mcpgateway.services.tool_service import ToolService
@@ -301,8 +302,14 @@ async def list_catalog_page(
             rows: Sequence[Tool | Resource | Prompt] = db.execute(batch_query.order_by(model.id.asc()).limit(size + 1)).scalars().all()
             if not rows:
                 break
+            visible = rows
+            if method == "tools/list":
+                visible = await filter_listed_tools(rows, server_id=server_id, user_email=user_email)
+            kept_ids = {row.id for row in visible}
             for row in rows:
                 after = row.id
+                if row.id not in kept_ids:
+                    continue
                 item = _serialize(method, row, model_items=model_items)
                 if item is not None:
                     items.append((row.id, item))

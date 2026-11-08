@@ -24,6 +24,7 @@ HOOK_PAYLOAD_POLICIES: dict[str, HookPayloadPolicy] = {
     # Tools
     "tool_pre_invoke": HookPayloadPolicy(writable_fields=frozenset({"name", "args", "headers"})),
     "tool_post_invoke": HookPayloadPolicy(writable_fields=frozenset({"result"})),
+    "tool_list": HookPayloadPolicy(writable_fields=frozenset({"tools"})),
     # Prompts
     "prompt_pre_fetch": HookPayloadPolicy(writable_fields=frozenset({"args"})),
     "prompt_post_fetch": HookPayloadPolicy(writable_fields=frozenset({"result"})),
