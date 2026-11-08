@@ -1,0 +1,18 @@
+plugins:
+  - name: HideTools
+    kind: tests.unit.mcpgateway.plugins.fixtures.plugins.tool_list.HideToolsPlugin
+    description: Hides tools by name for one user
+    version: "1.0.0"
+    author: Test Suite
+    hooks:
+      - tool_list
+    mode: sequential
+    priority: 50
+    config:
+      user: blocked@example.com
+      hidden:
+        - refund_order
+
+plugin_settings:
+  plugin_timeout: 30
+  fail_on_plugin_error: true

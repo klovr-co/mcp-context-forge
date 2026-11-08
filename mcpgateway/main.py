@@ -127,6 +127,7 @@ from mcpgateway.plugins import (
     start_plugin_invalidation_listener,
     stop_plugin_invalidation_listener,
 )
+from mcpgateway.plugins.tool_list import filter_listed_tools
 from mcpgateway.plugins.violation_codes import PLUGIN_VIOLATION_CODE_MAPPING, PluginViolationCode, VALID_HTTP_STATUS_CODES
 from mcpgateway.routers.openapi_schema_router import router as openapi_schema_router
 from mcpgateway.routers.server_well_known import router as server_well_known_router
@@ -11723,6 +11724,7 @@ async def _handle_tools_list_rpc(
         # Release DB connection early to prevent idle-in-transaction under load
         db.commit()
         db.close()
+        tools = await filter_listed_tools(tools, server_id=server_id, user_email=user_email)
         result = {"tools": serializer_func(tools)}
     else:
         tools, next_cursor = await tool_svc.list_tools(
@@ -11738,6 +11740,7 @@ async def _handle_tools_list_rpc(
         # Release DB connection early to prevent idle-in-transaction under load
         db.commit()
         db.close()
+        tools = await filter_listed_tools(tools, server_id=None, user_email=user_email)
         result = {"tools": serializer_func(tools)}
         if next_cursor:
             result["nextCursor"] = next_cursor

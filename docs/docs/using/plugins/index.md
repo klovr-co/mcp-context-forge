@@ -422,6 +422,7 @@ The plugin framework provides comprehensive hook coverage across the entire MCP 
 | `prompt_post_fetch` | After prompt template rendering | Content filtering, output transformation, safety checks | `PromptPosthookPayload` |
 | `tool_pre_invoke` | Before tool execution | Authorization, argument validation, dangerous operation blocking | `ToolPreInvokePayload` |
 | `tool_post_invoke` | After tool execution | Result filtering, PII masking, audit logging, response transformation | `ToolPostInvokePayload` |
+| `tool_list` | Before a `tools/list` result is returned | Hiding tools a caller may not use | `ToolListPayload` |
 | `resource_pre_fetch` | Before resource fetching | URI validation, protocol checking, metadata injection | `ResourcePreFetchPayload` |
 | `resource_post_fetch` | After resource content retrieval | Content filtering, size validation, sensitive data redaction | `ResourcePostFetchPayload` |
 | `http_pre_request` | Before HTTP request processing | Header transformation (e.g., custom token to Bearer) | `HttpPreRequestPayload` |
@@ -499,6 +500,7 @@ The tool hooks enable plugins to intercept and modify tool invocations:
 
 - **`tool_pre_invoke`**: Receives the tool name and arguments before execution. Can modify arguments or block the invocation entirely.
 - **`tool_post_invoke`**: Receives the tool result after execution. Can modify the result or block it from being returned.
+- **`tool_list`**: Receives the tools a caller is about to see from `tools/list`, after the gateway's own visibility rules. Can drop tools from the list; tools a plugin adds are ignored. Hiding a tool does not block calls to it, so pair it with a `tool_pre_invoke` check that applies the same rule.
 
 Example use cases:
 
@@ -526,6 +528,23 @@ class ToolPostInvokePayload(BaseModel):
     name: str                                    # Tool name
     result: Any                                  # Tool execution result
 ```
+
+**ToolListPayload**: Payload for the tool list hook (`mcpgateway.plugins.tool_list`). Return a copy with fewer `tools` to hide them.
+
+```python
+class ToolListItem(BaseModel):
+    id: str                                      # Tool id
+    name: str                                    # Name as listed to the client
+    original_name: Optional[str] = None          # Name on the upstream server
+    gateway_id: Optional[str] = None             # Upstream gateway id
+    team_id: Optional[str] = None                # Owning team id
+
+class ToolListPayload(PluginPayload):
+    server_id: Optional[str] = None              # Virtual server, or None for the global list
+    tools: list[ToolListItem]                    # Tools the caller can see before plugins run
+```
+
+`global_context.user` is the caller's email. The hook runs for the MCP `tools/list` method on virtual servers and the global catalog, including `/rpc`. Tools from a `direct_proxy` gateway come straight from the upstream server and are not passed to it.
 
 The associated `HttpHeaderPayload` object for the `ToolPreInvokePayload` is as follows:
 

@@ -108,6 +108,40 @@ async def test_complete_catalog_pages(catalog_db, method, key, model, count, ser
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("server_scoped", [False, True])
+async def test_tool_list_plugins_narrow_every_page(catalog_db, monkeypatch, server_scoped):
+    """Tools hidden by tool_list plugins are skipped while pages stay full and complete."""
+    rows = [_row("tools/list", index) for index in range(10)]
+    catalog_db.add_all(rows)
+    server_id = None
+    if server_scoped:
+        catalog_db.add(Server(id="server-a", name="Server A", tools=rows))
+        server_id = "server-a"
+    catalog_db.commit()
+    calls = []
+
+    async def hide_odd(tools, *, server_id, user_email):
+        calls.append((server_id, user_email))
+        return [tool for tool in tools if int(tool.id, 16) % 2 == 0]
+
+    monkeypatch.setattr(catalog, "filter_listed_tools", hide_odd)
+    pages = []
+    cursor = None
+    while True:
+        page = await catalog.list_catalog_page(catalog_db, "tools/list", cursor=cursor, server_id=server_id, user_email="user@example.com", token_teams=[])
+        pages.append([item["name"] for item in page["tools"]])
+        cursor = page.get("nextCursor")
+        if cursor is None:
+            break
+    assert pages == [["item-000", "item-002", "item-004"], ["item-006", "item-008"]]
+    assert calls and set(calls) == {(server_id, "user@example.com")}
+
+    calls.clear()
+    await catalog.list_catalog_page(catalog_db, "prompts/list", user_email="user@example.com", token_teams=[])
+    assert not calls
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("size", [None, 0, 4096])
 @pytest.mark.parametrize("server_scoped", [False, True])
 async def test_resource_serialization_preserves_size(catalog_db, size, server_scoped):
