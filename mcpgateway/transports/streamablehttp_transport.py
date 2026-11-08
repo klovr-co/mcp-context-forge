@@ -80,6 +80,7 @@ from mcpgateway.db import Tool as DbTool
 from mcpgateway.db import SessionLocal
 from mcpgateway.middleware.rbac import _ACCESS_DENIED_MSG
 from mcpgateway.observability import create_span, inject_trace_context_headers, set_span_attribute
+from mcpgateway.plugins.tool_list import filter_listed_tools
 from mcpgateway.services.completion_service import CompletionError, CompletionService, completion_error_code
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.mcp_apps import (
@@ -3002,6 +3003,7 @@ async def list_tools() -> List[types.Tool]:
 
                 # Default cache mode: use database
                 tools = await tool_service.list_server_tools(db, server_id, user_email=user_email, token_teams=token_teams, _request_headers=request_headers)
+                tools = await filter_listed_tools(tools, server_id=server_id, user_email=user_email)
                 return _tools_for_client(tools)
         except Exception as e:
             logger.error("Error listing tools:%s", e)
@@ -3010,6 +3012,7 @@ async def list_tools() -> List[types.Tool]:
         try:
             async with get_db() as db:
                 tools, _ = await tool_service.list_tools(db, include_inactive=False, limit=0, user_email=user_email, token_teams=token_teams, _request_headers=request_headers)
+                tools = await filter_listed_tools(tools, server_id=None, user_email=user_email)
                 return _tools_for_client(tools)
         except Exception as e:
             logger.exception("Error listing tools:%s", e)
