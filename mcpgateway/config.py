@@ -2713,6 +2713,13 @@ class Settings(BaseSettings):
 
     # Tools
     tool_timeout: int = 60  # seconds
+    tool_gateway_arguments: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            "Arguments the gateway adds to every listed tool, as {name: JSON schema}. "
+            "They skip the tool's input check, reach tool_pre_invoke plugins, and are removed before the upstream call."
+        ),
+    )
     max_tool_retries: int = 3
     tool_rate_limit: int = 100  # requests per minute
     tool_concurrent_limit: int = 10

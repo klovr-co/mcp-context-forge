@@ -79,6 +79,7 @@ from mcpgateway.db import Server as DbServer
 from mcpgateway.db import Tool as DbTool
 from mcpgateway.db import SessionLocal
 from mcpgateway.middleware.rbac import _ACCESS_DENIED_MSG
+from mcpgateway.utils.gateway_arguments import with_gateway_arguments
 from mcpgateway.observability import create_span, inject_trace_context_headers, set_span_attribute
 from mcpgateway.plugins.tool_list import filter_listed_tools
 from mcpgateway.services.completion_service import CompletionError, CompletionService, completion_error_code
@@ -349,7 +350,7 @@ def _to_mcp_tool(tool: Any, *, name: Optional[str] = None) -> types.Tool:
         "name": name or tool.name,
         "title": _safe_str_attr(tool, "title"),
         "description": tool.description or "",
-        "inputSchema": tool.input_schema,
+        "inputSchema": with_gateway_arguments(tool.input_schema),
         "outputSchema": tool.output_schema,
         "annotations": tool.annotations,
     }
