@@ -2101,9 +2101,12 @@ class ServerService(BaseService):
         if not authorization_servers:
             raise ServerError(f"OAuth authorization_server not configured for server: {server_id}")
 
-        # Build RFC 9728 Protected Resource Metadata response
+        # Build RFC 9728 Protected Resource Metadata response. An operator-set resource wins:
+        # it is the audience tokens are checked against, and clients reject metadata whose
+        # resource differs from the URL they connected to (e.g. behind a path-rewriting proxy).
+        configured_resource = oauth_config.get("resource")
         response_data: Dict[str, Any] = {
-            "resource": resource_base_url,
+            "resource": configured_resource if isinstance(configured_resource, str) and configured_resource else resource_base_url,
             "authorization_servers": authorization_servers,
             "bearer_methods_supported": ["header"],
         }

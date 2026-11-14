@@ -2182,6 +2182,16 @@ class TestServerService:
         with pytest.raises(ServerError, match="authorization_server not configured"):
             server_service.get_oauth_protected_resource_metadata(db, "550e8400e29b41d4a716446655440001", "https://gw.com/1")  # pragma: allowlist secret
 
+    def test_get_oauth_metadata_uses_configured_resource(self, server_service, mock_server):
+        """An operator-set resource is reported, so clients behind a path-rewriting proxy accept the metadata."""
+        mock_server.visibility = "public"
+        mock_server.oauth_enabled = True
+        mock_server.oauth_config = {"authorization_servers": ["https://idp.example.com"], "resource": "https://gw.com/mcp/search"}
+        db = MagicMock()
+        db.get.return_value = mock_server
+        result = server_service.get_oauth_protected_resource_metadata(db, "550e8400e29b41d4a716446655440001", "https://gw.com/servers/1/mcp")  # pragma: allowlist secret
+        assert result["resource"] == "https://gw.com/mcp/search"
+
     def test_get_oauth_metadata_success_single_server(self, server_service, mock_server):
         """Returns RFC 9728 metadata with singular authorization_server config (wrapped in array)."""
         mock_server.visibility = "public"
