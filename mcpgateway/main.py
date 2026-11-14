@@ -130,6 +130,7 @@ from mcpgateway.plugins import (
 from mcpgateway.plugins.violation_codes import PLUGIN_VIOLATION_CODE_MAPPING, PluginViolationCode, VALID_HTTP_STATUS_CODES
 from mcpgateway.routers.openapi_schema_router import router as openapi_schema_router
 from mcpgateway.routers.server_well_known import router as server_well_known_router
+from mcpgateway.utils.gateway_arguments import with_gateway_arguments
 from mcpgateway.routers.well_known import router as well_known_router
 from mcpgateway.schemas import (
     A2AAgentCreate,
@@ -947,7 +948,7 @@ def _serialize_mcp_tool_definition(tool: Any) -> Dict[str, Any]:
     if description is not None or name is not None or input_schema is not None:
         payload["description"] = description or ""
     if input_schema is not None:
-        payload["inputSchema"] = input_schema
+        payload["inputSchema"] = with_gateway_arguments(input_schema)
 
     output_schema = data.get("outputSchema", getattr(tool, "output_schema", None))
     if output_schema is not None:

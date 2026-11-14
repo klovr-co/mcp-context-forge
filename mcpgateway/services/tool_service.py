@@ -118,6 +118,7 @@ from mcpgateway.utils.metrics_common import build_top_performers
 from mcpgateway.utils.pagination import decode_cursor, encode_cursor, unified_paginate
 from mcpgateway.utils.passthrough_headers import compute_passthrough_headers_cached
 from mcpgateway.utils.retry_manager import ResilientHttpClient
+from mcpgateway.utils.gateway_arguments import without_gateway_arguments
 from mcpgateway.utils.safe_jsonschema import validate_safely
 from mcpgateway.utils.services_auth import decode_auth, encode_auth
 from mcpgateway.utils.sqlalchemy_modifier import json_contains_tag_expr
@@ -814,7 +815,7 @@ def _validate_tool_input_arguments(arguments: Dict[str, Any], input_schema: Opti
     if not input_schema:
         return None
     try:
-        _validate_with_cached_schema(arguments, input_schema)
+        _validate_with_cached_schema(without_gateway_arguments(arguments, input_schema), input_schema)
     except (jsonschema.exceptions.ValidationError, jsonschema.exceptions.SchemaError, referencing.exceptions.Unresolvable) as exc:
         return str(exc)
     return None
@@ -5808,6 +5809,8 @@ class ToolService(BaseService):
                             if payload.headers is not None:
                                 headers = payload.headers.model_dump()
 
+                    arguments = without_gateway_arguments(arguments, tool_payload.get("input_schema"))
+
                     # Build the payload based on integration type
                     payload = arguments.copy()
 
@@ -6884,6 +6887,7 @@ class ToolService(BaseService):
                     # but stripping unconditionally prevents leakage when the plugin is disabled,
                     # errors in permissive mode, or the header is mistakenly in passthrough_allowed.
                     headers = {hk: hv for hk, hv in headers.items() if hk.lower() != "x-vault-tokens"}
+                    arguments = without_gateway_arguments(arguments, tool_payload.get("input_schema"))
 
                     # OAuth authorization_code deny-path: if we entered the no-DB-token branch
                     # above and no plugin (or other auth source) injected an Authorization header,
@@ -6990,6 +6994,7 @@ class ToolService(BaseService):
                     # but stripping unconditionally prevents leakage when the plugin is disabled,
                     # errors in permissive mode, or the header is mistakenly in passthrough_allowed.
                     headers = {hk: hv for hk, hv in headers.items() if hk.lower() != "x-vault-tokens"}
+                    arguments = without_gateway_arguments(arguments, tool_payload.get("input_schema"))
 
                     prepared = prepare_a2a_invocation(
                         agent_type=a2a_agent_type,
