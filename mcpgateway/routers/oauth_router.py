@@ -1107,7 +1107,7 @@ async def oauth_callback(
         await _persist_learned_audience(gateway, result, db)
 
         if app_user_email and result.get("success"):
-            await _load_tools_on_first_sign_in(db, gateway, app_user_email, team_id)
+            await _load_tools_on_sign_in(db, gateway, app_user_email, team_id)
 
         logger.info(f"Completed OAuth flow for gateway {SecurityValidator.sanitize_log_message(gateway_id)}, user {SecurityValidator.sanitize_log_message(str(result.get('user_id')))}")
 
@@ -1841,13 +1841,13 @@ async def fetch_tools_after_oauth(
         raise HTTPException(status_code=500, detail="Failed to fetch tools")
 
 
-async def _load_tools_on_first_sign_in(db: Session, gateway: Gateway, app_user_email: str, team_id: Optional[str]) -> None:
-    """Load an authorization_code gateway's tools with the first sign-in, whoever it is.
+async def _load_tools_on_sign_in(db: Session, gateway: Gateway, app_user_email: str, team_id: Optional[str]) -> None:
+    """Reload an authorization_code gateway's tools with every sign-in, whoever it is.
 
     The gateway can only list such a server's tools with a person's token, so the list is empty until
-    someone signs in. Fetch Tools needs ``gateways.update``, which ordinary team members don't have,
-    so without this their sign-in leaves the gateway with no tools. The list is the same for every
-    person, so it is loaded only while the gateway has none. A failure here never fails the sign-in.
+    someone signs in, and new tools on the server appear only after a reload. Fetch Tools needs
+    ``gateways.update``, which ordinary team members don't have, so without this a team member's
+    sign-in leaves the list empty or stale. A failure here never fails the sign-in.
 
     Args:
         db: Database session.
@@ -1855,14 +1855,12 @@ async def _load_tools_on_first_sign_in(db: Session, gateway: Gateway, app_user_e
         app_user_email: The ContextForge user whose token was just stored.
         team_id: The team from the OAuth state, which selects the token's storage path.
     """
-    if gateway.tools:
-        return
     # First-Party
     from mcpgateway.services.gateway_service import GatewayService  # pylint: disable=import-outside-toplevel
 
     try:
         result = await GatewayService().fetch_tools_after_oauth(db, str(gateway.id), app_user_email, teams=[team_id] if team_id else None)
-        logger.info("Loaded %d tools for gateway %s with the first sign-in", len(result.get("tools", [])), SecurityValidator.sanitize_log_message(str(gateway.id)))
+        logger.info("Loaded %d tools for gateway %s with a sign-in", len(result.get("tools", [])), SecurityValidator.sanitize_log_message(str(gateway.id)))
     except Exception as e:  # pylint: disable=broad-except
         logger.warning("Could not load tools for gateway %s after sign-in: %s", SecurityValidator.sanitize_log_message(str(gateway.id)), e)
 
