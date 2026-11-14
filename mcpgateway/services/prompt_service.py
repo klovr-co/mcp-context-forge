@@ -41,7 +41,7 @@ from sqlalchemy.orm import joinedload, selectinload, Session
 # First-Party
 from mcpgateway.common.models import Message, PromptResult, Role, TextContent
 from mcpgateway.common.validators import validate_meta_data as _validate_meta_data
-from mcpgateway.common.validators import without_progress_token
+from mcpgateway.common.validators import without_client_envelope, without_progress_token
 from mcpgateway.config import settings
 from mcpgateway.db import EmailTeam
 from mcpgateway.db import EmailTeamMember as DbEmailTeamMember
@@ -188,7 +188,7 @@ async def _get_prompt_with_meta(
 
     Eliminates the repeated ``if meta_data: send_request … else: get_prompt``
     pattern across every transport/pool branch in this module.
-    The client's progress token never goes upstream. When a callback is set, the SDK stamps its own token.
+    The client's progress token and protocol envelope never go upstream. When a callback is set, the SDK stamps its own token.
 
     Args:
         session: An active MCP :class:`ClientSession`.
@@ -202,7 +202,7 @@ async def _get_prompt_with_meta(
     Returns:
         The raw MCP result object (caller extracts ``.messages``).
     """
-    meta_data = without_progress_token(meta_data)
+    meta_data = without_client_envelope(without_progress_token(meta_data))
     if meta_data or progress_callback:
         return await session.send_request(
             _build_get_prompt_request(name, arguments, meta_data),

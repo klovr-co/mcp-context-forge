@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 # First-Party
 from mcpgateway.common.models import CompleteResult
-from mcpgateway.common.validators import without_progress_token
+from mcpgateway.common.validators import without_client_envelope, without_progress_token
 from mcpgateway.config import settings
 from mcpgateway.db import Prompt as DbPrompt
 from mcpgateway.db import Resource as DbResource
@@ -347,7 +347,7 @@ class CompletionService:
         if context_arguments is not None and not isinstance(context_arguments, dict):
             raise CompletionInvalidParamsError("Completion context arguments must be an object")
 
-        meta = without_progress_token(meta)
+        meta = without_client_envelope(without_progress_token(meta))
         auth_query_params: Optional[Dict[str, str]] = None
 
         try:
