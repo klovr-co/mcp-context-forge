@@ -50,7 +50,7 @@ from sqlalchemy.orm import joinedload, selectinload, Session
 
 # First-Party
 from mcpgateway.common.models import BlobResourceContents, ResourceContent, ResourceContents, ResourceTemplate, TextContent
-from mcpgateway.common.validators import SecurityValidator, without_progress_token
+from mcpgateway.common.validators import SecurityValidator, without_client_envelope, without_progress_token
 from mcpgateway.common.validators import validate_meta_data as _validate_meta_data
 from mcpgateway.config import settings
 from mcpgateway.db import EmailTeam
@@ -209,7 +209,7 @@ def set_upstream_cache_directive(result: Any) -> None:
 async def _read_resource_with_meta(session: "ClientSession", uri: Any, meta_data: Optional[Dict[str, Any]], progress_callback: ProgressFnT | None = None) -> Any:
     """Dispatch read_resource, injecting _meta and relaying upstream progress when requested.
 
-    The client's progress token never goes upstream. When a callback is set, the SDK stamps its own token.
+    The client's progress token and protocol envelope never go upstream. When a callback is set, the SDK stamps its own token.
 
     Args:
         session: The upstream client session.
@@ -220,7 +220,7 @@ async def _read_resource_with_meta(session: "ClientSession", uri: Any, meta_data
     Returns:
         The upstream ``ReadResourceResult``.
     """
-    meta_data = without_progress_token(meta_data)
+    meta_data = without_client_envelope(without_progress_token(meta_data))
     if meta_data or progress_callback:
         return await session.send_request(
             _build_read_resource_request(uri, meta_data),

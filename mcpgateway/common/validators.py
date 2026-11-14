@@ -2597,6 +2597,36 @@ def without_progress_token(meta: Optional[Dict[str, Any]]) -> Optional[Dict[str,
     return {k: v for k, v in meta.items() if k not in ("progress_token", "progressToken")} or None
 
 
+def without_client_envelope(meta: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return ``meta`` without the downstream client's protocol envelope.
+
+    A 2026-07-28 client stamps its protocol version, client info and client
+    capabilities into every request's ``_meta``. Those describe the client's
+    connection to the gateway, not the gateway's connection to the upstream, so
+    they must not be forwarded: the upstream session stamps its own envelope
+    when it negotiated a modern version, and a handshake-era upstream must not
+    see one at all (some reject the request outright, others reject a body
+    version that disagrees with the ``MCP-Protocol-Version`` header).
+
+    Args:
+        meta: The request ``_meta`` dictionary, or ``None``.
+
+    Returns:
+        A copy without the envelope keys, or ``None`` if nothing else remains.
+
+    Examples:
+        >>> without_client_envelope({PROTOCOL_VERSION_META_KEY: "2026-07-28", "traceparent": "x"})
+        {'traceparent': 'x'}
+        >>> without_client_envelope({PROTOCOL_VERSION_META_KEY: "2026-07-28", CLIENT_INFO_META_KEY: {}}) is None
+        True
+        >>> without_client_envelope(None) is None
+        True
+    """
+    if not meta:
+        return None
+    return {k: v for k, v in meta.items() if k not in MCP_ENVELOPE_META_KEYS} or None
+
+
 def validate_meta_data(meta_data: Optional[Dict[str, Any]]) -> None:
     """Enforce size, key-count, and depth limits on user-supplied meta_data (CWE-400).
 
