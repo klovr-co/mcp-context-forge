@@ -68,7 +68,7 @@ from mcpgateway.common.models import TextContent
 from mcpgateway.common.models import Tool as PydanticTool
 from mcpgateway.common.models import ToolAnnotations
 from mcpgateway.common.models import ToolResult
-from mcpgateway.common.validators import pin_url_to_resolved_ip, SecurityValidator
+from mcpgateway.common.validators import pin_url_to_resolved_ip, SecurityValidator, without_client_envelope
 from mcpgateway.config import settings
 from mcpgateway.db import A2AAgent as DbA2AAgent
 from mcpgateway.db import fresh_db_session
@@ -1248,7 +1248,7 @@ async def _call_upstream_tool(
     return await session.call_tool(
         tool_name,
         arguments,
-        meta=meta,
+        meta=without_client_envelope(meta),
         progress_callback=progress_callback,
         allow_input_required=True,
         input_responses=input_responses,
@@ -4308,7 +4308,7 @@ class ToolService(BaseService):
                         # Call tool with meta if provided
                         if request_meta_data:
                             logger.debug("Forwarding _meta to remote gateway: %s", request_meta_data)
-                            tool_result = await client.call_tool(name=remote_name, arguments=arguments, meta=request_meta_data)
+                            tool_result = await client.call_tool(name=remote_name, arguments=arguments, meta=without_client_envelope(request_meta_data))
                         else:
                             tool_result = await client.call_tool(name=remote_name, arguments=arguments)
                     with create_span(

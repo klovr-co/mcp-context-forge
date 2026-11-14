@@ -49,7 +49,7 @@ from sqlalchemy.orm import joinedload, selectinload, Session
 
 # First-Party
 from mcpgateway.common.models import ResourceContent, ResourceContents, ResourceTemplate, TextContent
-from mcpgateway.common.validators import SecurityValidator
+from mcpgateway.common.validators import SecurityValidator, without_client_envelope
 from mcpgateway.common.validators import validate_meta_data as _validate_meta_data
 from mcpgateway.config import settings
 from mcpgateway.db import EmailTeam
@@ -163,7 +163,8 @@ def set_upstream_cache_directive(result: Any) -> None:
 
 
 async def _read_resource_with_meta(session: "ClientSession", uri: Any, meta_data: Optional[Dict[str, Any]]) -> Any:
-    """Dispatch read_resource and inject _meta when metadata is provided."""
+    """Dispatch read_resource and inject _meta when metadata is provided. The client's protocol envelope never goes upstream."""
+    meta_data = without_client_envelope(meta_data)
     if meta_data:
         return await session.send_request(
             _build_read_resource_request(uri, meta_data),

@@ -29,6 +29,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 # First-Party
+from mcpgateway.common.validators import without_client_envelope
 from mcpgateway.common.models import CompleteResult
 from mcpgateway.config import settings
 from mcpgateway.db import Prompt as DbPrompt
@@ -352,6 +353,7 @@ class CompletionService:
                 if capabilities is None or getattr(capabilities, "completions", None) is None:
                     raise CompletionNotSupportedError(f"Upstream gateway '{gateway_id}' does not support completions")
 
+                meta = without_client_envelope(meta)  # the client's protocol envelope never goes upstream
                 if meta is None:
                     remote_result = await session.complete(ref, argument, context_arguments)
                 else:
