@@ -40,6 +40,7 @@ from sqlalchemy.orm import joinedload, selectinload, Session
 # First-Party
 from mcpgateway.common.models import Message, PromptResult, Role, TextContent
 from mcpgateway.common.validators import validate_meta_data as _validate_meta_data
+from mcpgateway.common.validators import without_client_envelope
 from mcpgateway.config import settings
 from mcpgateway.db import EmailTeam
 from mcpgateway.db import EmailTeamMember as DbEmailTeamMember
@@ -186,6 +187,7 @@ async def _get_prompt_with_meta(session: "ClientSession", name: str, arguments: 
     Returns:
         The raw MCP result object (caller extracts ``.messages``).
     """
+    meta_data = without_client_envelope(meta_data)  # the client's protocol envelope never goes upstream
     if meta_data:
         return await session.send_request(
             _build_get_prompt_request(name, arguments, meta_data),
