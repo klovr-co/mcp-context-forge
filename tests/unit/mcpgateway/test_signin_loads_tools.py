@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""An authorization_code gateway gets its tools from the first person's sign-in, and keeps them when the
+"""An authorization_code gateway reloads its tools with every person's sign-in, and keeps them when the
 gateway itself (no person's token) gets an empty answer."""
 
 # Standard
@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # First-Party
-from mcpgateway.routers.oauth_router import _load_tools_on_first_sign_in
+from mcpgateway.routers.oauth_router import _load_tools_on_sign_in
 from mcpgateway.services.gateway_service import GatewayCatalogSyncResult, GatewayService
 
 
@@ -23,27 +23,27 @@ def _empty_answer():
 
 
 @pytest.mark.asyncio
-async def test_first_sign_in_loads_the_tools_with_that_persons_token():
+async def test_a_sign_in_loads_the_tools_with_that_persons_token():
     fetch = AsyncMock(return_value={"tools": [object()] * 18})
     with patch("mcpgateway.services.gateway_service.GatewayService.fetch_tools_after_oauth", fetch):
-        await _load_tools_on_first_sign_in(MagicMock(), _gateway([]), "member@acme.example", "team-acme")
+        await _load_tools_on_sign_in(MagicMock(), _gateway([]), "member@acme.example", "team-acme")
     fetch.assert_awaited_once()
     assert fetch.await_args.args[1:] == ("gw-1", "member@acme.example")
     assert fetch.await_args.kwargs == {"teams": ["team-acme"]}
 
 
 @pytest.mark.asyncio
-async def test_later_sign_ins_leave_a_loaded_list_alone():
-    fetch = AsyncMock()
+async def test_later_sign_ins_reload_a_list_that_already_has_tools():
+    fetch = AsyncMock(return_value={"tools": []})
     with patch("mcpgateway.services.gateway_service.GatewayService.fetch_tools_after_oauth", fetch):
-        await _load_tools_on_first_sign_in(MagicMock(), _gateway([SimpleNamespace(original_name="search")]), "b@acme.example", None)
-    fetch.assert_not_awaited()
+        await _load_tools_on_sign_in(MagicMock(), _gateway([SimpleNamespace(original_name="search")]), "b@acme.example", None)
+    fetch.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_a_failed_load_never_fails_the_sign_in():
     with patch("mcpgateway.services.gateway_service.GatewayService.fetch_tools_after_oauth", AsyncMock(side_effect=RuntimeError("upstream down"))):
-        await _load_tools_on_first_sign_in(MagicMock(), _gateway([]), "member@acme.example", None)
+        await _load_tools_on_sign_in(MagicMock(), _gateway([]), "member@acme.example", None)
 
 
 def test_an_empty_answer_without_a_persons_token_keeps_the_tools():
