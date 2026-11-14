@@ -7684,6 +7684,12 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
     ) -> GatewayCatalogReconcileResult:
         """Prune stale rows and attach new catalog rows in caller transaction."""
 
+        oauth_config = gateway.oauth_config if isinstance(gateway.oauth_config, dict) else {}
+        if oauth_config.get("grant_type") == "authorization_code" and not catalog_sync.new_tool_names and not catalog_sync.new_resource_uris and not catalog_sync.new_prompt_names:
+            # Without a person's token an authorization_code server answers with nothing (an update or a
+            # lifecycle check runs as whoever made it). Nothing back is not "everything was removed".
+            skip_stale_cleanup = True
+
         if catalog_sync.items_added > 0:
             if catalog_sync.tools_to_add:
                 logger.info(f"Added {len(catalog_sync.tools_to_add)} new tools during {log_context}")
