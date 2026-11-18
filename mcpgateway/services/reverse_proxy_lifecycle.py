@@ -37,7 +37,7 @@ from mcpgateway.config import settings
 from mcpgateway.db import Gateway as DbGateway
 from mcpgateway.db import Server as DbServer
 from mcpgateway.services.logging_service import LoggingService
-from mcpgateway.services.reverse_proxy_catalog import AuthenticatedRegistrationContext, ReverseProxyCatalogConflictError, ReverseProxyCatalogService, stable_proxy_id
+from mcpgateway.services.reverse_proxy_catalog import AuthenticatedRegistrationContext, ReverseProxyCatalogConflictError, ReverseProxyCatalogService, ReverseProxyNameConflictError, stable_proxy_id
 from mcpgateway.services.reverse_proxy_discovery import ReverseProxyDiscoveryService
 from mcpgateway.services.reverse_proxy_protocol import (
     encode_server_message,
@@ -87,6 +87,15 @@ class ReverseProxyAuthenticatedContext:
 
     owner_email: str
     team_id: str | None
+
+
+def _name_conflict(error: BaseException) -> ReverseProxyNameConflictError | None:
+    """Find a name conflict in a registration failure; anyio's task group wraps it in an ExceptionGroup."""
+    if isinstance(error, ReverseProxyNameConflictError):
+        return error
+    if isinstance(error, BaseExceptionGroup):
+        return next((found for inner in error.exceptions if (found := _name_conflict(inner)) is not None), None)
+    return None
 
 
 async def _persist_unreachable_best_effort(session_manager: ReverseProxySessionManager, evictions: tuple[ReverseProxyEviction, ...]) -> None:
@@ -367,12 +376,14 @@ async def run_proxied_connection(connection_io: ConnectionIO, context: ReversePr
                 with anyio.CancelScope(shield=True):
                     await compensate()
                 raise
-            except Exception:
+            except Exception as registration_error:
                 LOGGER.error("Reverse proxy registration failed for connection %s", connection_id, exc_info=True)
                 with anyio.CancelScope(shield=True):
                     await compensate()
+                failure = _name_conflict(registration_error)
+                message = failure.client_message if failure is not None else "registration failed"
                 try:
-                    await send_frame(encode_server_message(register_complete(str(connection_id), RegistrationStatus.ERROR, "registration failed")))
+                    await send_frame(encode_server_message(register_complete(str(connection_id), RegistrationStatus.ERROR, message)))
                     await connection_io.close(code=status.WS_1008_POLICY_VIOLATION, reason="registration failed")
                 except Exception as io_error:
                     # The socket can already be lost (for example mid-discovery);

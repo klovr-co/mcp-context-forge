@@ -92,6 +92,18 @@ class ReverseProxyCatalogConflictError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class ReverseProxyNameConflictError(ReverseProxyCatalogConflictError):
+    """The owner already has or can see a server of this name, so the device must publish under another."""
+
+    name: str = ""
+
+    @property
+    def client_message(self) -> str:
+        """Return the message sent back to the registering device."""
+        return f"name conflict: a server named {self.name!r} is already published or visible to you; publish under another name"
+
+
+@dataclass(frozen=True, slots=True)
 class ReverseProxyGatewayScope:
     """Trusted catalog scope for an internal reverse-proxy gateway."""
 
@@ -117,12 +129,14 @@ def stable_proxy_id(context: AuthenticatedRegistrationContext, server: Registrat
 
 
 def _owner_name_conflict(model, name_column, name: str, team_id: str | None, owner_email: str):
-    """Rows whose name the owner would also see: public ones, and their team's shared or own ones.
+    """Rows whose name clashes for the owner: public ones, their team's shared or own ones, and their private ones in any team.
 
+    Private tool names are unique per owner across teams, so a private name taken in another team would only fail later, at discovery.
     Visibility is left out of reconnect identity, so an entry that sharing widened keeps its scope.
     """
     in_team = and_(model.team_id == team_id, or_(model.visibility == "team", model.owner_email == owner_email))
-    return and_(name_column == name, or_(model.visibility == "public", in_team))
+    own_private = and_(model.visibility == "private", model.owner_email == owner_email)
+    return and_(name_column == name, or_(model.visibility == "public", in_team, own_private))
 
 
 def _lock_catalog_registration(db: Session, catalog_id: str) -> None:
@@ -165,7 +179,7 @@ class ReverseProxyCatalogService:
             existing = next((candidate for candidate in candidates if candidate.id == catalog_id), None)
             conflicts = [candidate for candidate in candidates if candidate.id != catalog_id]
             if conflicts:
-                raise ReverseProxyCatalogConflictError(stable_id=catalog_id, reason="virtual server name is already registered in this scope")
+                raise ReverseProxyNameConflictError(stable_id=catalog_id, reason="virtual server name is already registered for this owner", name=registration.name)
 
             if existing is not None:
                 identity_matches = (
