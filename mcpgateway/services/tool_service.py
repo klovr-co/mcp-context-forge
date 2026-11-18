@@ -5265,7 +5265,10 @@ class ToolService(BaseService):
 
         # Normal mode: look up tool in database/cache
         if not is_direct_proxy:
-            cached_payload = await tool_lookup_cache.get(name, server_id=server_id) if tool_lookup_cache.enabled else None
+            # With same-name tools across teams, always resolve: a pick cached before another team's tool appeared
+            # would skip the candidate list the plugins need to choose the login.
+            use_lookup_cache = tool_lookup_cache.enabled and not settings.tool_same_name_across_teams
+            cached_payload = await tool_lookup_cache.get(name, server_id=server_id) if use_lookup_cache else None
 
             if cached_payload and cached_payload.get("status", "active") == "active":
                 cached_tool_payload = cached_payload.get("tool") or {}
@@ -5283,7 +5286,7 @@ class ToolService(BaseService):
                     tool_payload = cached_tool_payload
                     gateway_payload = cached_payload.get("gateway")
 
-            if not tool_payload and tool_lookup_cache.enabled:
+            if not tool_payload and use_lookup_cache:
                 negative_payload = await tool_lookup_cache.get_negative(name, negative_cache_caller_scope, server_id)
                 if negative_payload:
                     self._raise_for_negative_tool_status(name, negative_payload.get("status"))
