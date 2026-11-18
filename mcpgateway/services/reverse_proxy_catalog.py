@@ -172,7 +172,11 @@ class ReverseProxyCatalogService:
         scope = ReverseProxyGatewayScope(team_id=context.canonical_team_id, visibility=context.visibility)
         lock_identity = f"scope={context.scope_key}|name={slugify(registration.name)}"
         lock_id = uuid.uuid5(REVERSE_PROXY_CATALOG_NAMESPACE, lock_identity).hex
+        owner_lock_id = uuid.uuid5(REVERSE_PROXY_CATALOG_NAMESPACE, f"owner={context.canonical_owner_email}|name={slugify(registration.name)}").hex
         try:
+            # Owner lock first, then scope lock: one owner's registrations of a name in different teams serialize,
+            # and the fixed order keeps two locks from deadlocking.
+            _lock_catalog_registration(db, owner_lock_id)
             _lock_catalog_registration(db, lock_id)
             server_scope_conflict = _owner_name_conflict(DbServer, DbServer.name, registration.name, scope.team_id, context.canonical_owner_email)
             candidates = db.execute(select(DbServer).where(or_(DbServer.id == catalog_id, server_scope_conflict)).with_for_update()).scalars().all()
@@ -268,7 +272,7 @@ class ReverseProxyCatalogService:
                 db.flush()
         except GatewayNameConflictError as exc:
             db.rollback()
-            raise ReverseProxyCatalogConflictError(stable_id=catalog_id, reason=str(exc)) from exc
+            raise ReverseProxyNameConflictError(stable_id=catalog_id, reason=str(exc), name=registration.name) from exc
         except ServerNameConflictError as exc:
             db.rollback()
             raise ReverseProxyCatalogConflictError(stable_id=catalog_id, reason=str(exc)) from exc

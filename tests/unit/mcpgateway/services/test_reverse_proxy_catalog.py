@@ -158,9 +158,30 @@ async def test_an_owners_private_gateway_in_another_team_blocks_the_name(catalog
     test_db.commit()
 
     # When / Then
-    with pytest.raises(ReverseProxyCatalogConflictError):
+    with pytest.raises(ReverseProxyNameConflictError) as caught:
         await catalog_service.register(test_db, AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-2"), RegistrationServer(name="notes"))
+    assert "'notes'" in caught.value.client_message
     assert test_db.query(DbServer).filter(DbServer.name == "notes").count() == 0
+
+
+@pytest.mark.asyncio
+async def test_one_owners_registrations_of_a_name_share_a_lock_across_teams(catalog_service, test_db, monkeypatch):
+    # Given: record the advisory locks each registration takes, in order
+    taken = []
+    monkeypatch.setattr("mcpgateway.services.reverse_proxy_catalog._lock_catalog_registration", lambda db, lock_id: taken.append(lock_id))
+
+    # When: the same owner registers a name in two teams (the second is refused)
+    await catalog_service.register(test_db, AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-1"), RegistrationServer(name="devbox-tools"))
+    first = list(taken)
+    taken.clear()
+    with pytest.raises(ReverseProxyNameConflictError):
+        await catalog_service.register(test_db, AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-2"), RegistrationServer(name="devbox-tools"))
+    second = list(taken)
+
+    # Then: both took the same owner lock first, so concurrent attempts serialize; their team locks differ
+    assert len(first) == len(second) == 2
+    assert first[0] == second[0]
+    assert first[1] != second[1]
 
 
 @pytest.mark.asyncio
