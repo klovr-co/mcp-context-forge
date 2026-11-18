@@ -5723,6 +5723,8 @@ class ToolService(BaseService):
             context_server_id = tool_gateway_id if tool_gateway_id and isinstance(tool_gateway_id, str) else "unknown"
             content_type = request_headers.get("content-type") if request_headers else None
             global_context = GlobalContext(request_id=request_id, server_id=context_server_id, tenant_id=payload_tenant_id, user=app_user_email, content_type=content_type)
+        # Overwrite on every invocation: a retry may reuse this context with a now-unambiguous name.
+        global_context.metadata.pop(SAME_NAME_GATEWAY_IDS, None)
         if _same_name_gateway_ids.get():
             global_context.metadata[SAME_NAME_GATEWAY_IDS] = list(_same_name_gateway_ids.get())
 
