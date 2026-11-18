@@ -350,7 +350,7 @@ def _to_mcp_tool(tool: Any, *, name: Optional[str] = None) -> types.Tool:
         "name": name or tool.name,
         "title": _safe_str_attr(tool, "title"),
         "description": tool.description or "",
-        "inputSchema": with_gateway_arguments(tool.input_schema),
+        "inputSchema": with_gateway_arguments(tool.input_schema, getattr(tool, "id", None)),
         "outputSchema": tool.output_schema,
         "annotations": tool.annotations,
     }

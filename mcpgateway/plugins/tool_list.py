@@ -23,7 +23,7 @@ Examples:
 # Standard
 from collections.abc import Sequence
 import logging
-from typing import Optional, TypeVar
+from typing import Any, Optional, TypeVar
 import uuid
 
 # Third-Party
@@ -32,8 +32,10 @@ from cpex.framework.hooks.registry import get_hook_registry
 from pydantic import BaseModel
 
 # First-Party
+from mcpgateway.config import settings
 from mcpgateway.plugins import DEFAULT_SERVER_ID, get_plugin_manager
 from mcpgateway.utils.correlation_id import get_correlation_id
+from mcpgateway.utils.gateway_arguments import listed_gateway_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,9 @@ class ToolListItem(BaseModel):
         original_name: Name of the tool on its upstream server.
         gateway_id: Upstream gateway id.
         team_id: Owning team id.
+        gateway_arguments: Set by a plugin to replace the gateway arguments listed for this
+            tool and caller, as {name: JSON schema}; ``{}`` lists none. None keeps the defaults.
+        required_gateway_arguments: Gateway arguments to list as required for this tool.
     """
 
     id: str
@@ -58,6 +63,8 @@ class ToolListItem(BaseModel):
     original_name: Optional[str] = None
     gateway_id: Optional[str] = None
     team_id: Optional[str] = None
+    gateway_arguments: Optional[dict[str, dict[str, Any]]] = None
+    required_gateway_arguments: list[str] = []
 
 
 class ToolListPayload(PluginPayload):
@@ -128,6 +135,7 @@ async def filter_listed_tools(tools: Sequence[T], *, server_id: Optional[str], u
         ...     asyncio.run(filter_listed_tools(["a"], server_id=None, user_email=None))
         ['a']
     """
+    listed_gateway_arguments(None)
     if not tools:
         return list(tools)
     plugin_manager = await get_plugin_manager(server_id or DEFAULT_SERVER_ID)
@@ -141,6 +149,13 @@ async def filter_listed_tools(tools: Sequence[T], *, server_id: Optional[str], u
         return list(tools)
 
     kept = {item.id for item in result.modified_payload.tools}
+    listed_gateway_arguments(
+        {
+            item.id: (item.gateway_arguments if item.gateway_arguments is not None else settings.tool_gateway_arguments, item.required_gateway_arguments)
+            for item in result.modified_payload.tools
+            if item.gateway_arguments is not None or item.required_gateway_arguments
+        }
+    )
     filtered = [tool for tool in tools if str(getattr(tool, "id")) in kept]
     if len(filtered) != len(tools):
         logger.debug("tool_list plugins hid %d of %d tools for %s", len(tools) - len(filtered), len(tools), user_email)
