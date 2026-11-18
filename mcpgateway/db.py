@@ -778,6 +778,21 @@ def _refresh_gateway_slugs_batched(session: Session, batch_size: int) -> None:
         last_id = gateways[-1].id
 
 
+def _tool_name_taken(session: Session, tool: "Tool", name: str) -> bool:
+    """Whether another tool already holds ``name`` under the same (team, owner) uniqueness rule.
+
+    Args:
+        session: Active SQLAlchemy session.
+        tool: The tool about to be renamed.
+        name: The name it would get.
+
+    Returns:
+        True when the rename would break uq_team_owner_email_name_tool.
+    """
+    stmt = select(Tool.id).where(Tool._computed_name == name, Tool.id != tool.id, Tool.team_id == getattr(tool, "team_id", None), Tool.owner_email == getattr(tool, "owner_email", None)).limit(1)  # pylint: disable=protected-access
+    return session.execute(stmt).first() is not None
+
+
 def _refresh_tool_names_batched(session: Session, batch_size: int) -> None:
     """Refresh tool names in batches with eager-loaded gateways.
 
@@ -807,6 +822,12 @@ def _refresh_tool_names_batched(session: Session, batch_size: int) -> None:
             name_slug = slugify(name_slug_source)
 
             new_name = join_gateway_tool_name(slugify(tool.gateway.name) if tool.gateway else "", name_slug)
+
+            if settings.tool_name_skip_repeated_prefix and tool.name != new_name and _tool_name_taken(session, tool, new_name):
+                # Another tool already has this name in the same namespace: keep the current name rather than
+                # fail the batch (a failed batch rolls back while earlier batches stay renamed).
+                logger.warning("Keeping tool %s as %r: %r is already taken in its team", tool.id, tool.name, new_name)
+                continue
 
             if tool.name != new_name:
                 tool.name = new_name
@@ -4865,6 +4886,8 @@ def _joined_tool_name_sql(gateway_slug: str, separator: str, name_slug_column: A
     Returns:
         An SQL expression for the new tool names.
     """
+    if not gateway_slug:
+        return name_slug_column  # same as join_gateway_tool_name: no gateway slug, no prefix
     joined = gateway_slug + separator + name_slug_column
     if not settings.tool_name_skip_repeated_prefix:
         return joined
