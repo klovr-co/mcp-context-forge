@@ -424,6 +424,29 @@ class TestWebSocketEndpoint:
         session_manager.disconnect.assert_awaited_once_with(self._CONNECTION_ID)
 
     @pytest.mark.asyncio
+    async def test_websocket_register_name_conflict_tells_the_device(self, session_manager, catalog_service, discovery_service):
+        """A name conflict -> register_complete(error) naming the conflict, then close 1008; discovery never runs."""
+        # First-Party
+        from mcpgateway.services.reverse_proxy_catalog import ReverseProxyNameConflictError
+
+        catalog_service.register.side_effect = ReverseProxyNameConflictError(stable_id=self._STABLE_ID, reason="taken", name="test-server")
+        websocket = ScriptedReverseProxyWebSocket()
+        websocket.queue_client_frame({"type": "register", "server": {"name": "test-server"}})
+
+        # First-Party
+        from mcpgateway.routers.reverse_proxy import websocket_endpoint
+
+        await websocket_endpoint(cast(WebSocket, websocket), Mock())
+
+        frames = websocket.sent_frames
+        assert [frame["type"] for frame in frames] == ["register_ack", "register_complete"]
+        assert frames[1]["status"] == "error"
+        assert frames[1]["message"].startswith("name conflict: a server named 'test-server'")
+        assert self._STABLE_ID not in frames[1]["message"]
+        assert websocket.closed_code == 1008
+        discovery_service.discover_and_reconcile.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_websocket_register_discovery_failure_closes_connection(self, session_manager, catalog_service, discovery_service):
         """Discovery failure -> register_complete(error) then close 1008; the stable mapping is never promoted."""
         discovery_service.discover_and_reconcile.side_effect = RuntimeError("discovery exploded")

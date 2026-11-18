@@ -30,6 +30,7 @@ from mcpgateway.services.reverse_proxy_catalog import (
     ReverseProxyCatalogService,
     ReverseProxyGatewayRegistration,
     ReverseProxyGatewayScope,
+    ReverseProxyNameConflictError,
     stable_proxy_id,
 )
 from mcpgateway.services.reverse_proxy_protocol import RegistrationServer
@@ -134,6 +135,45 @@ async def test_a_team_entry_of_the_same_name_still_conflicts(catalog_service, te
     # When / Then
     with pytest.raises(ReverseProxyCatalogConflictError):
         await catalog_service.register(test_db, context, RegistrationServer(name="slack"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("first_team", "second_team"), [("team-1", "team-2"), (None, "team-2"), ("team-1", None)])
+async def test_one_owner_cannot_publish_a_name_in_two_teams(catalog_service, test_db, first_team, second_team):
+    # Given: private tool names are unique per owner across teams
+    await catalog_service.register(test_db, AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id=first_team), RegistrationServer(name="devbox-tools"))
+
+    # When / Then
+    with pytest.raises(ReverseProxyNameConflictError) as caught:
+        await catalog_service.register(test_db, AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id=second_team), RegistrationServer(name="devbox-tools"))
+    assert "devbox-tools" in caught.value.client_message
+    assert [(g.team_id, g.owner_email) for g in test_db.query(DbGateway).filter(DbGateway.slug == "devbox-tools")] == [(first_team, "alice@example.com")]
+    assert test_db.query(DbServer).filter(DbServer.name == "devbox-tools").count() == 1
+
+
+@pytest.mark.asyncio
+async def test_an_owners_private_gateway_in_another_team_blocks_the_name(catalog_service, test_db):
+    # Given: only a gateway row, no virtual server of that name
+    test_db.add(DbGateway(name="notes", slug="notes", url="https://example.com/mcp", transport="STREAMABLEHTTP", capabilities={}, owner_email="alice@example.com", team_id="team-1", visibility="private", created_via="api"))
+    test_db.commit()
+
+    # When / Then
+    with pytest.raises(ReverseProxyCatalogConflictError):
+        await catalog_service.register(test_db, AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-2"), RegistrationServer(name="notes"))
+    assert test_db.query(DbServer).filter(DbServer.name == "notes").count() == 0
+
+
+@pytest.mark.asyncio
+async def test_different_owners_in_different_teams_publish_the_same_name(catalog_service, test_db):
+    # Given
+    await catalog_service.register(test_db, AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-1"), RegistrationServer(name="devbox-tools"))
+
+    # When
+    await catalog_service.register(test_db, AuthenticatedRegistrationContext(owner_email="bob@example.com", team_id="team-2"), RegistrationServer(name="devbox-tools"))
+
+    # Then
+    rows = test_db.query(DbGateway).filter(DbGateway.slug == "devbox-tools").all()
+    assert sorted((g.owner_email, g.team_id) for g in rows) == [("alice@example.com", "team-1"), ("bob@example.com", "team-2")]
 
 
 @pytest.mark.asyncio
