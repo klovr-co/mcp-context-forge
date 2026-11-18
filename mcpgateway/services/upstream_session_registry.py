@@ -190,17 +190,38 @@ _IDENTITY_FIELDS = frozenset({"downstream_session_id", "gateway_id", "url", "tra
 SessionKey = tuple[str, str, str]
 """(downstream_session_id, gateway_id, login fingerprint)."""
 
-_CREDENTIAL_HEADER_HINTS = ("auth", "token", "key", "cookie", "secret", "password")
+# Headers that never carry a login. Every other header counts, so a custom auth header of any name is covered.
+_NON_CREDENTIAL_HEADERS = frozenset(
+    {
+        "accept",
+        "accept-encoding",
+        "accept-language",
+        "content-type",
+        "user-agent",
+        "mcp-protocol-version",
+        "mcp-session-id",
+        "x-mcp-session-id",
+        "last-event-id",
+        "traceparent",
+        "tracestate",
+        "baggage",
+        "x-request-id",
+        "x-correlation-id",
+    }
+)
+
+MAX_LOGINS_PER_GATEWAY = 4
+"""Upstream sessions one downstream session keeps per gateway, one per login; the least recently used goes first."""
 
 
 def login_fingerprint(headers: Optional[Mapping[str, str]]) -> str:
-    """Fingerprint the credential-bearing headers, so sessions opened with different logins never mix.
+    """Fingerprint the headers that can carry a login, so sessions opened with different logins never mix.
 
     Args:
         headers: Headers the upstream session would be opened with.
 
     Returns:
-        A short hex digest, or ``""`` when no credential header is present.
+        A short hex digest, or ``""`` when every header is a known non-credential one.
 
     Examples:
         >>> login_fingerprint(None)
@@ -211,10 +232,12 @@ def login_fingerprint(headers: Optional[Mapping[str, str]]) -> str:
         False
         >>> login_fingerprint({"x-mcp-session-id": "s1"})
         ''
+        >>> login_fingerprint({"X-Tenant-Pass": "a"}) == login_fingerprint({"X-Tenant-Pass": "b"})
+        False
     """
     if not headers:
         return ""
-    credentials = sorted((name.lower(), value) for name, value in headers.items() if any(hint in name.lower() for hint in _CREDENTIAL_HEADER_HINTS))
+    credentials = sorted((name.lower(), value) for name, value in headers.items() if name.lower() not in _NON_CREDENTIAL_HEADERS)
     if not credentials:
         return ""
     digest = hashlib.sha256()
@@ -1042,6 +1065,8 @@ class UpstreamSessionRegistry:
             session.last_used = time.time()
             session.use_count += 1
 
+        await self._evict_logins_over_limit(key)
+
         # Hand out the session with the operation lock held. MCP SDK
         # ClientSession.send_request() mutates its JSON-RPC id counter without
         # synchronization, so concurrent callers on one session can cross-wire
@@ -1062,6 +1087,18 @@ class UpstreamSessionRegistry:
         # All other exceptions (tool-level errors from the upstream, caller
         # application errors) intentionally leave the session in place — the
         # transport is fine, the caller just didn't like the result.
+
+    async def _evict_logins_over_limit(self, key: SessionKey) -> None:
+        """Keep at most MAX_LOGINS_PER_GATEWAY sessions per (downstream session, gateway), so refreshed tokens don't pile up.
+
+        Runs after the key lock is released: evicting takes the other keys' locks.
+        """
+        async with self._global_lock:
+            siblings = [k for k, s in self._sessions.items() if k[:2] == key[:2] and k != key]
+            siblings.sort(key=lambda k: self._sessions[k].last_used)
+        extra = len(siblings) + 1 - MAX_LOGINS_PER_GATEWAY
+        if extra > 0:
+            await self._evict_keys_in_parallel(siblings[:extra])
 
     async def evict_session(self, downstream_session_id: str) -> int:
         """Close and remove every upstream session owned by this downstream session id.
