@@ -1095,10 +1095,11 @@ class UpstreamSessionRegistry:
         """
         async with self._global_lock:
             siblings = [k for k, s in self._sessions.items() if k[:2] == key[:2] and k != key]
-            siblings.sort(key=lambda k: self._sessions[k].last_used)
-        extra = len(siblings) + 1 - MAX_LOGINS_PER_GATEWAY
-        if extra > 0:
-            await self._evict_keys_in_parallel(siblings[:extra])
+            extra = len(siblings) + 1 - MAX_LOGINS_PER_GATEWAY
+            # Never close a session in the middle of a call; an idle one goes on the next acquire instead.
+            idle = sorted((k for k in siblings if not self._sessions[k].operation_lock.locked()), key=lambda k: self._sessions[k].last_used)
+        if extra > 0 and idle:
+            await self._evict_keys_in_parallel(idle[:extra])
 
     async def evict_session(self, downstream_session_id: str) -> int:
         """Close and remove every upstream session owned by this downstream session id.

@@ -224,6 +224,28 @@ async def test_old_logins_are_closed_beyond_the_limit(registry, factory_and_reco
 
 
 @pytest.mark.asyncio
+async def test_a_session_in_use_is_not_closed_for_the_limit(registry, factory_and_records):
+    # First-Party
+    from mcpgateway.services.upstream_session_registry import MAX_LOGINS_PER_GATEWAY
+
+    def acquire(n):
+        return registry.acquire(
+            downstream_session_id="s1",
+            gateway_id="g1",
+            url="http://upstream/mcp",
+            headers={"Authorization": f"Bearer login-{n}"},
+            transport_type=TransportType.STREAMABLE_HTTP,
+        )
+
+    async with acquire(0) as busy:
+        for n in range(1, MAX_LOGINS_PER_GATEWAY + 1):
+            async with acquire(n):
+                pass
+        assert not busy._closed, "the oldest session was mid-call, so a newer idle one was closed instead"  # pylint: disable=protected-access
+    assert registry.snapshot().active_sessions == MAX_LOGINS_PER_GATEWAY
+
+
+@pytest.mark.asyncio
 async def test_isolation_different_downstream_sessions_get_different_upstream_sessions(registry, factory_and_records):
     """The core #4205 invariant: session A must not share upstream with session B."""
     _, created = factory_and_records
