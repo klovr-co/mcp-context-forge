@@ -23,6 +23,7 @@ from __future__ import annotations
 # Standard
 import asyncio
 import contextlib
+import hashlib
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
@@ -185,6 +186,41 @@ class SessionCreateRequest:
 
 
 _IDENTITY_FIELDS = frozenset({"downstream_session_id", "gateway_id", "url", "transport_type"})
+
+SessionKey = tuple[str, str, str]
+"""(downstream_session_id, gateway_id, login fingerprint)."""
+
+_CREDENTIAL_HEADER_HINTS = ("auth", "token", "key", "cookie", "secret", "password")
+
+
+def login_fingerprint(headers: Optional[Mapping[str, str]]) -> str:
+    """Fingerprint the credential-bearing headers, so sessions opened with different logins never mix.
+
+    Args:
+        headers: Headers the upstream session would be opened with.
+
+    Returns:
+        A short hex digest, or ``""`` when no credential header is present.
+
+    Examples:
+        >>> login_fingerprint(None)
+        ''
+        >>> login_fingerprint({"Authorization": "Bearer a"}) == login_fingerprint({"authorization": "Bearer a"})
+        True
+        >>> login_fingerprint({"Authorization": "Bearer a"}) == login_fingerprint({"Authorization": "Bearer b"})
+        False
+        >>> login_fingerprint({"x-mcp-session-id": "s1"})
+        ''
+    """
+    if not headers:
+        return ""
+    credentials = sorted((name.lower(), value) for name, value in headers.items() if any(hint in name.lower() for hint in _CREDENTIAL_HEADER_HINTS))
+    if not credentials:
+        return ""
+    digest = hashlib.sha256()
+    for name, value in credentials:
+        digest.update(f"{name}\0{value}\0".encode())
+    return digest.hexdigest()[:32]
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +466,7 @@ class UpstreamSession:
 
     The four identity fields (downstream_session_id, gateway_id, url,
     transport_type) are logically immutable after construction: the registry
-    keys its session map on (downstream_session_id, gateway_id), and routing
+    keys its session map on (downstream_session_id, gateway_id, login fingerprint), and routing
     decisions depend on url + transport_type. Re-assigning any of them would
     leave the registry indexing a session under one key while the session
     itself thought it belonged to another — a split-brain that violates the
@@ -931,8 +967,8 @@ class UpstreamSessionRegistry:
         self._session_create_timeout_seconds = session_create_timeout_seconds
         self._shutdown_timeout_seconds = shutdown_timeout_seconds
 
-        self._sessions: dict[tuple[str, str], UpstreamSession] = {}
-        self._key_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._sessions: dict[SessionKey, UpstreamSession] = {}
+        self._key_locks: dict[SessionKey, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
         self._metrics = _RegistryMetrics()
 
@@ -951,7 +987,11 @@ class UpstreamSessionRegistry:
         transport_type: TransportType,
         httpx_client_factory: Optional[HttpxClientFactory] = None,
     ) -> AsyncIterator[UpstreamSession]:
-        """Get or create the upstream session for ``(downstream_session_id, gateway_id)``.
+        """Get or create the upstream session for ``(downstream_session_id, gateway_id, login)``.
+
+        ``login`` fingerprints the credential headers, so a call that carries a
+        different login (another account's token, or a refreshed one) gets its
+        own upstream session instead of riding one opened with other credentials.
 
         Concurrent acquires for the same key serialize on the per-key lock
         across the check-or-create phase, then on the per-session operation lock
@@ -962,7 +1002,7 @@ class UpstreamSessionRegistry:
         if not gateway_id:
             raise ValueError("gateway_id is required")
 
-        key = (downstream_session_id, gateway_id)
+        key = (downstream_session_id, gateway_id, login_fingerprint(headers))
         key_lock = await self._get_key_lock(key)
 
         async with key_lock:
@@ -1046,7 +1086,7 @@ class UpstreamSessionRegistry:
             keys = [k for k in self._sessions if k[1] == gateway_id]
         return await self._evict_keys_in_parallel(keys)
 
-    async def _evict_keys_in_parallel(self, keys: list[tuple[str, str]]) -> int:
+    async def _evict_keys_in_parallel(self, keys: list[SessionKey]) -> int:
         """Run _evict_key concurrently for a set of keys; returns the count that succeeded."""
         if not keys:
             return 0
@@ -1083,7 +1123,7 @@ class UpstreamSessionRegistry:
     # Internals
     # ------------------------------------------------------------------
 
-    async def _get_key_lock(self, key: tuple[str, str]) -> asyncio.Lock:
+    async def _get_key_lock(self, key: SessionKey) -> asyncio.Lock:
         """Return (creating if needed) the per-key lock used to serialize check-or-create."""
         async with self._global_lock:
             lock = self._key_locks.get(key)
@@ -1092,7 +1132,7 @@ class UpstreamSessionRegistry:
                 self._key_locks[key] = lock
             return lock
 
-    async def _evict_key(self, key: tuple[str, str]) -> bool:
+    async def _evict_key(self, key: SessionKey) -> bool:
         """Close the session at ``key`` (if any) and drop its entry. Returns True on eviction."""
         lock = await self._get_key_lock(key)
         async with lock:
