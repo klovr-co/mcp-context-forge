@@ -32,7 +32,7 @@ import uuid
 # Third-Party
 import jsonschema
 import sqlalchemy as sa
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, create_engine, DateTime, event, Float, ForeignKey, func, Index
+from sqlalchemy import BigInteger, Boolean, case, CheckConstraint, Column, create_engine, DateTime, event, Float, ForeignKey, func, Index
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import Integer, JSON, make_url, MetaData, select, String, Table, text, Text, UniqueConstraint
 from sqlalchemy.engine import Connection, Engine
@@ -47,7 +47,7 @@ from sqlalchemy.types import TypeDecorator
 # First-Party
 from mcpgateway.common.validators import SecurityValidator
 from mcpgateway.config import settings
-from mcpgateway.utils.create_slug import slugify
+from mcpgateway.utils.create_slug import join_gateway_tool_name, slugify
 from mcpgateway.utils.db_isready import wait_for_db_ready
 from mcpgateway.utils.safe_jsonschema import validate_safely, warn_unprovable_patterns
 
@@ -790,7 +790,6 @@ def _refresh_tool_names_batched(session: Session, batch_size: int) -> None:
     """
 
     last_id: Optional[str] = None
-    separator = settings.gateway_tool_name_separator
 
     while True:
         stmt = select(Tool).options(joinedload(Tool.gateway)).order_by(Tool.id).limit(batch_size)
@@ -807,11 +806,7 @@ def _refresh_tool_names_batched(session: Session, batch_size: int) -> None:
             name_slug_source = getattr(tool, "custom_name_slug", None) or tool.original_name
             name_slug = slugify(name_slug_source)
 
-            if tool.gateway:
-                gateway_slug = slugify(tool.gateway.name)
-                new_name = f"{gateway_slug}{separator}{name_slug}"
-            else:
-                new_name = name_slug
+            new_name = join_gateway_tool_name(slugify(tool.gateway.name) if tool.gateway else "", name_slug)
 
             if tool.name != new_name:
                 tool.name = new_name
@@ -3431,8 +3426,7 @@ class Tool(Base):
             return cast(str, getattr(self, "_computed_name"))
         custom_name_slug = slugify(getattr(self, "custom_name_slug"))
         if getattr(self, "gateway_id", None):
-            gateway_slug = slugify(self.gateway.name)  # type: ignore[attr-defined]
-            return f"{gateway_slug}{settings.gateway_tool_name_separator}{custom_name_slug}"
+            return join_gateway_tool_name(slugify(self.gateway.name), custom_name_slug)  # type: ignore[attr-defined]
         return custom_name_slug
 
     @name.setter
@@ -4860,6 +4854,25 @@ class Gateway(Base):
     )
 
 
+def _joined_tool_name_sql(gateway_slug: str, separator: str, name_slug_column: Any) -> Any:
+    """SQL form of join_gateway_tool_name, for bulk renames when a gateway's name changes.
+
+    Args:
+        gateway_slug: The gateway's new slug.
+        separator: The configured tool name separator.
+        name_slug_column: The tools' custom_name_slug column.
+
+    Returns:
+        An SQL expression for the new tool names.
+    """
+    joined = gateway_slug + separator + name_slug_column
+    if not settings.tool_name_skip_repeated_prefix:
+        return joined
+    prefix = gateway_slug + separator
+    already_prefixed = (func.substr(name_slug_column, 1, len(prefix)) == prefix) & (func.length(name_slug_column) > len(prefix))
+    return case((already_prefixed, name_slug_column), else_=joined)
+
+
 @event.listens_for(Gateway, "after_update")
 def update_tool_names_on_gateway_update(_mapper, connection, target):
     """
@@ -4891,7 +4904,7 @@ def update_tool_names_on_gateway_update(_mapper, connection, target):
         cast(Any, tools_table)
         .update()
         .where(tools_table.c.gateway_id == target.id)
-        .values(name=new_gateway_slug + separator + tools_table.c.custom_name_slug)
+        .values(name=_joined_tool_name_sql(new_gateway_slug, separator, tools_table.c.custom_name_slug))
         .execution_options(synchronize_session=False)
     )
 
@@ -6868,11 +6881,7 @@ def set_custom_name_and_slug(mapper, connection, target):  # pylint: disable=unu
             except Exception:  # nosec B110 - intentionally proceed without prefix on failure
                 pass
 
-    if gateway_slug:
-        sep = settings.gateway_tool_name_separator
-        target.name = f"{gateway_slug}{sep}{target.custom_name_slug}"
-    else:
-        target.name = target.custom_name_slug
+    target.name = join_gateway_tool_name(gateway_slug, target.custom_name_slug)
 
 
 @event.listens_for(Prompt, "before_insert")

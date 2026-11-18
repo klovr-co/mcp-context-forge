@@ -84,6 +84,38 @@ def slugify(text: str) -> str:
     return slug
 
 
+def join_gateway_tool_name(gateway_slug: str, name_slug: str) -> str:
+    """Join a gateway slug and a tool's name slug into the tool's gateway-scoped name.
+
+    With ``tool_name_skip_repeated_prefix`` on, a name slug that already starts with the
+    gateway slug and the separator is used as it is, so the gateway's name isn't doubled.
+
+    Args:
+        gateway_slug: The gateway's slug, or "" for a tool without a gateway.
+        name_slug: The tool's slugified custom or original name.
+
+    Returns:
+        The gateway-scoped tool name.
+
+    Examples:
+        >>> from unittest.mock import patch
+        >>> join_gateway_tool_name("slack", "slack-search-public")
+        'slack-slack-search-public'
+        >>> with patch.object(settings, "tool_name_skip_repeated_prefix", True):
+        ...     join_gateway_tool_name("slack", "slack-search-public"), join_gateway_tool_name("slack", "search"), join_gateway_tool_name("slack", "slack"), join_gateway_tool_name("slack", "slacker")
+        ('slack-search-public', 'slack-search', 'slack-slack', 'slack-slacker')
+        >>> join_gateway_tool_name("", "search")
+        'search'
+    """
+    if not gateway_slug:
+        return name_slug
+    separator = settings.gateway_tool_name_separator
+    prefix = gateway_slug + separator
+    if settings.tool_name_skip_repeated_prefix and name_slug.startswith(prefix) and len(name_slug) > len(prefix):
+        return name_slug
+    return prefix + name_slug
+
+
 def build_gateway_tool_invocation_name(gateway_name: str, tool_name: str) -> str:
     """Build persisted invocation name for a gateway-backed tool.
 
@@ -94,4 +126,4 @@ def build_gateway_tool_invocation_name(gateway_name: str, tool_name: str) -> str
     Returns:
         Normalized gateway-prefixed invocation name.
     """
-    return slugify(gateway_name) + settings.gateway_tool_name_separator + slugify(tool_name)
+    return join_gateway_tool_name(slugify(gateway_name), slugify(tool_name))

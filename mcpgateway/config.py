@@ -3316,6 +3316,13 @@ Disallow: /
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore")
 
     gateway_tool_name_separator: str = "-"
+    tool_name_skip_repeated_prefix: bool = Field(
+        default=False,
+        description=(
+            "Don't prefix a gateway tool's name with the gateway's slug when the tool's own name, slugified, already starts "
+            "with that slug and the separator: slack_search_public on gateway slack is slack-search-public, not slack-slack-search-public."
+        ),
+    )
     valid_slug_separator_regexp: ClassVar[str] = r"^(-{1,2}|[_.])$"
 
     @field_validator("gateway_tool_name_separator")

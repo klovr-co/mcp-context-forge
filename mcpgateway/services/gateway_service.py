@@ -162,7 +162,7 @@ from mcpgateway.services.tool_validation_policy import (
 )
 from mcpgateway.utils.admin_check import is_admin_bypass_granted
 from mcpgateway.utils.correlation_id import get_correlation_id
-from mcpgateway.utils.create_slug import build_gateway_tool_invocation_name, slugify
+from mcpgateway.utils.create_slug import build_gateway_tool_invocation_name, join_gateway_tool_name, slugify
 from mcpgateway.utils.display_name import generate_display_name
 from mcpgateway.utils.error_formatter import PublicValidationError, unexpected_error_detail
 from mcpgateway.utils.internal_http import internal_loopback_base_url
@@ -7534,7 +7534,7 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
             if existing is not None:
                 if project_gateway_rename:
                     custom_name_slug = existing.custom_name_slug or slugify(existing.custom_name or existing.original_name)
-                    candidate_name = slugify(gateway_name) + settings.gateway_tool_name_separator + custom_name_slug
+                    candidate_name = join_gateway_tool_name(slugify(gateway_name), custom_name_slug)
                 else:
                     candidate_name = existing.name
                 visibility = existing.visibility
