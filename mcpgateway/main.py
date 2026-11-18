@@ -927,7 +927,7 @@ def _serialize_mcp_tool_definition(tool: Any) -> Dict[str, Any]:
     if description is not None or name is not None or input_schema is not None:
         payload["description"] = description or ""
     if input_schema is not None:
-        payload["inputSchema"] = with_gateway_arguments(input_schema)
+        payload["inputSchema"] = with_gateway_arguments(input_schema, data.get("id", getattr(tool, "id", None)))
 
     output_schema = data.get("outputSchema", getattr(tool, "output_schema", None))
     if output_schema is not None:

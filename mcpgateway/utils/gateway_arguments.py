@@ -13,36 +13,72 @@ arguments, and removes them before the call reaches the upstream server.
 A tool whose own schema already has an argument of that name keeps its own,
 untouched. With the setting empty, nothing changes.
 
+A ``tool_list`` plugin may replace them per tool for one listing, for example
+to list the caller's own accounts in the ``account`` description, or to hide
+the argument for a caller with one account. See ``listed_gateway_arguments``.
+
 """
 
 # Standard
-from typing import Any, Dict, Optional
+from contextvars import ContextVar
+from typing import Any, Dict, List, Optional, Tuple
 
 # First-Party
 from mcpgateway.config import settings
 
 
-def with_gateway_arguments(input_schema: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+ListedArguments = Tuple[Dict[str, Dict[str, Any]], List[str]]
+"""Per-tool gateway arguments for one listing: ({name: JSON schema}, names to mark required)."""
+
+_listed: ContextVar[Optional[Dict[str, ListedArguments]]] = ContextVar("listed_gateway_arguments", default=None)
+
+
+def listed_gateway_arguments(per_tool: Optional[Dict[str, ListedArguments]]) -> None:
+    """Set the per-tool gateway arguments for the listing being built in this context.
+
+    ``tool_list`` plugins decide them; the listing's serializer reads them through
+    ``with_gateway_arguments(schema, tool_id)``. Tools not named keep the defaults.
+
+    Args:
+        per_tool: {tool id: (arguments, required names)}, or None for defaults everywhere.
+
+    Examples:
+        >>> listed_gateway_arguments({"t1": ({}, [])})
+        >>> with_gateway_arguments({"type": "object", "properties": {"q": {}}}, "t1")
+        {'type': 'object', 'properties': {'q': {}}}
+        >>> listed_gateway_arguments(None)
+    """
+    _listed.set(per_tool)
+
+
+def with_gateway_arguments(input_schema: Optional[Dict[str, Any]], tool_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Return the schema a client sees: the tool's own schema plus the gateway arguments.
 
     Args:
         input_schema: The tool's stored input schema.
+        tool_id: The tool's id, to use arguments a ``tool_list`` plugin set for it.
 
     Returns:
-        A new schema with the gateway arguments added, or the original when none are set
+        A new schema with the gateway arguments added, or the original when none apply
         or the schema isn't an object schema.
 
     Examples:
         >>> with_gateway_arguments(None) is None
         True
     """
-    extra = settings.tool_gateway_arguments
+    override = (_listed.get() or {}).get(str(tool_id)) if tool_id is not None else None
+    extra, required = override if override is not None else (settings.tool_gateway_arguments, [])
     if not extra or not isinstance(input_schema, dict) or input_schema.get("type", "object") != "object":
         return input_schema
-    properties = dict(input_schema.get("properties") or {})
+    own = input_schema.get("properties") or {}
+    properties = dict(own)
     for name, schema in extra.items():
         properties.setdefault(name, schema)
-    return {**input_schema, "properties": properties}
+    schema = {**input_schema, "properties": properties}
+    added_required = [name for name in required if name in extra and name not in own]
+    if added_required:
+        schema["required"] = list(input_schema.get("required") or []) + [name for name in added_required if name not in (input_schema.get("required") or [])]
+    return schema
 
 
 def without_gateway_arguments(arguments: Optional[Dict[str, Any]], input_schema: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
