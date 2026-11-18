@@ -32,6 +32,7 @@ from mcpgateway.config import settings
 from mcpgateway.services.upstream_session_registry import (
     get_upstream_session_registry,
     init_upstream_session_registry,
+    login_fingerprint,
     SessionCreateRequest,
     SessionLifecycle,
     shutdown_upstream_session_registry,
@@ -184,6 +185,42 @@ async def test_a_different_login_in_the_same_session_gets_its_own_upstream(regis
     assert first_again is first
     assert registry.snapshot().active_sessions == 2
     assert await registry.evict_session("s1") == 2
+
+
+@pytest.mark.asyncio
+async def test_a_custom_auth_header_of_any_name_separates_sessions(registry, factory_and_records):
+    _, created = factory_and_records
+    for secret in ("one", "two"):
+        async with registry.acquire(
+            downstream_session_id="s1",
+            gateway_id="g1",
+            url="http://upstream/mcp",
+            headers={"X-Tenant-Pass": secret},
+            transport_type=TransportType.STREAMABLE_HTTP,
+        ):
+            pass
+    assert len(created) == 2
+
+
+@pytest.mark.asyncio
+async def test_old_logins_are_closed_beyond_the_limit(registry, factory_and_records):
+    """A long chat whose token refreshes many times keeps a bounded number of upstream sessions."""
+    # First-Party
+    from mcpgateway.services.upstream_session_registry import MAX_LOGINS_PER_GATEWAY
+
+    _, created = factory_and_records
+    for n in range(MAX_LOGINS_PER_GATEWAY + 2):
+        async with registry.acquire(
+            downstream_session_id="s1",
+            gateway_id="g1",
+            url="http://upstream/mcp",
+            headers={"Authorization": f"Bearer refreshed-{n}"},
+            transport_type=TransportType.STREAMABLE_HTTP,
+        ):
+            pass
+    assert len(created) == MAX_LOGINS_PER_GATEWAY + 2
+    assert registry.snapshot().active_sessions == MAX_LOGINS_PER_GATEWAY
+    assert ("s1", "g1", login_fingerprint({"Authorization": "Bearer refreshed-0"})) not in registry._sessions  # pylint: disable=protected-access
 
 
 @pytest.mark.asyncio
