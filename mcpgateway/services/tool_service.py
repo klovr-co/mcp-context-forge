@@ -15,6 +15,7 @@ It handles:
 
 # Standard
 import asyncio
+from contextvars import ContextVar
 import base64
 import binascii
 from collections.abc import Mapping
@@ -179,6 +180,10 @@ def _get_tool_lookup_cache() -> Any:
 # Initialize logging service first
 logging_service = LoggingService()
 logger = logging_service.get_logger(__name__)
+
+SAME_NAME_GATEWAY_IDS = "same_name_gateway_ids"
+# Gateways of the same-name tools a call was resolved among (TOOL_SAME_NAME_ACROSS_TEAMS), for this request only.
+_same_name_gateway_ids: ContextVar[Tuple[str, ...]] = ContextVar("same_name_gateway_ids", default=())
 
 _W3C_TRACEPARENT_RE = re.compile(r"^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$")
 
@@ -4982,7 +4987,11 @@ class ToolService(BaseService):
             best_priority = min(visibility_priority.get(candidate.visibility, 99) for candidate in accessible_exact)
             best_tools = [candidate for candidate in accessible_exact if visibility_priority.get(candidate.visibility, 99) == best_priority]
             if len(best_tools) > 1:
-                raise ToolInvocationError(f"Multiple tools found with name '{name}' at same priority level. Tool name is ambiguous.")
+                same_upstream = settings.tool_same_name_across_teams and len({(t.original_name, (t.gateway.url if t.gateway else "").rstrip("/")) for t in best_tools}) == 1
+                if not same_upstream or not best_tools[0].gateway:
+                    raise ToolInvocationError(f"Multiple tools found with name '{name}' at same priority level. Tool name is ambiguous.")
+                best_tools.sort(key=lambda t: str(t.id))
+                _same_name_gateway_ids.set(tuple(str(t.gateway_id) for t in best_tools))
             return best_tools[0], caller_dependent_resolution
 
         if server_id:
@@ -5366,6 +5375,7 @@ class ToolService(BaseService):
                 if negative_payload:
                     self._raise_for_negative_tool_status(name, negative_payload.get("status"))
 
+        _same_name_gateway_ids.set(())
         if not tool_payload:
             # Each resolution stage eager-loads the gateway and uses scalars().all()
             # so duplicate names across teams remain deterministic.
@@ -5801,6 +5811,8 @@ class ToolService(BaseService):
             context_server_id = tool_gateway_id if tool_gateway_id and isinstance(tool_gateway_id, str) else "unknown"
             content_type = request_headers.get("content-type") if request_headers else None
             global_context = GlobalContext(request_id=request_id, server_id=context_server_id, tenant_id=payload_tenant_id, user=app_user_email, content_type=content_type)
+        if _same_name_gateway_ids.get():
+            global_context.metadata[SAME_NAME_GATEWAY_IDS] = list(_same_name_gateway_ids.get())
 
         # Per-invocation accumulator for CPEX control-execution telemetry.
         # Declared here (before the try/with block) so it survives into the

@@ -2746,6 +2746,14 @@ class Settings(BaseSettings):
     max_tool_retries: int = 3
     tool_rate_limit: int = 100  # requests per minute
     tool_concurrent_limit: int = 10
+    tool_same_name_across_teams: bool = Field(
+        default=False,
+        description=(
+            "When a caller can see several tools of one name at the same visibility (one per team) that call the same "
+            "upstream URL under the same upstream name, pick one instead of failing as ambiguous. tool_pre_invoke plugins "
+            "get the candidates' gateway ids in global_context.metadata['same_name_gateway_ids'] to choose the login."
+        ),
+    )
     rest_response_text_max_length: int = Field(
         default=5000,
         ge=1000,
