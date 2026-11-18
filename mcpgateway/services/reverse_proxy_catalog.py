@@ -272,7 +272,7 @@ class ReverseProxyCatalogService:
                 db.flush()
         except GatewayNameConflictError as exc:
             db.rollback()
-            raise ReverseProxyNameConflictError(stable_id=catalog_id, reason=str(exc), name=registration.name) from exc
+            raise ReverseProxyCatalogConflictError(stable_id=catalog_id, reason=str(exc)) from exc
         except ServerNameConflictError as exc:
             db.rollback()
             raise ReverseProxyCatalogConflictError(stable_id=catalog_id, reason=str(exc)) from exc
@@ -335,7 +335,9 @@ class ReverseProxyCatalogService:
         conflicts = [candidate for candidate in candidates if candidate.id != registration.stable_id]
         if conflicts:
             conflict = conflicts[0]
-            raise GatewayNameConflictError(conflict.slug, enabled=conflict.enabled, gateway_id=conflict.id, visibility=conflict.visibility)
+            if conflict.slug == slug_name:
+                raise ReverseProxyNameConflictError(stable_id=registration.stable_id, reason=f"gateway name {slug_name!r} is already registered or visible to this owner", name=registration.name)
+            raise ReverseProxyCatalogConflictError(stable_id=registration.stable_id, reason=f"internal gateway url is already held by gateway {conflict.id}")
 
         if existing is not None:
             identity_matches = (
@@ -347,7 +349,7 @@ class ReverseProxyCatalogService:
                 and existing.team_id == scope.team_id
             )
             if not identity_matches:
-                raise GatewayNameConflictError(existing.slug, enabled=existing.enabled, gateway_id=existing.id, visibility=existing.visibility)
+                raise ReverseProxyCatalogConflictError(stable_id=registration.stable_id, reason="stable gateway id is held by a row with a different identity")
             existing.description = registration.description
             existing.enabled = True
             existing.reachable = True
