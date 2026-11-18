@@ -133,8 +133,9 @@ async def test_a_team_entry_of_the_same_name_still_conflicts(catalog_service, te
     test_db.commit()
 
     # When / Then
-    with pytest.raises(ReverseProxyCatalogConflictError):
+    with pytest.raises(ReverseProxyCatalogConflictError) as caught:
         await catalog_service.register(test_db, context, RegistrationServer(name="slack"))
+    assert caught.type is ReverseProxyNameConflictError
 
 
 @pytest.mark.asyncio
@@ -415,8 +416,9 @@ async def test_other_owner_stable_id_collision_fails_closed(catalog_service, tes
     test_db.commit()
 
     # When / Then
-    with pytest.raises(ReverseProxyCatalogConflictError):
+    with pytest.raises(ReverseProxyCatalogConflictError) as caught:
         await catalog_service.register(test_db, context, registration)
+    assert caught.type is ReverseProxyCatalogConflictError
 
 
 @pytest.mark.asyncio
@@ -450,8 +452,9 @@ async def test_non_reverse_proxy_name_or_origin_conflict_fails_closed(catalog_se
     test_db.commit()
 
     # When / Then
-    with pytest.raises(ReverseProxyCatalogConflictError):
+    with pytest.raises(ReverseProxyCatalogConflictError) as caught:
         await catalog_service.register(test_db, context, RegistrationServer(name="occupied"))
+    assert caught.type is ReverseProxyNameConflictError
 
 
 @pytest.mark.asyncio
@@ -464,8 +467,9 @@ async def test_non_reverse_proxy_server_conflict_is_rejected_before_gateway_crea
     test_db.commit()
 
     # When / Then
-    with pytest.raises(ReverseProxyCatalogConflictError):
+    with pytest.raises(ReverseProxyCatalogConflictError) as caught:
         await catalog_service.register(test_db, context, registration)
+    assert caught.type is ReverseProxyNameConflictError
     assert not test_db.in_transaction()
     assert test_db.get(DbGateway, catalog_id) is None
 
@@ -782,3 +786,18 @@ async def test_unreachable_write_proceeds_once_failed_replacement_releases_lease
     assert gateway.reachable is False
     assert old_worker.registration_key(stable_id) not in redis.store
     cache.invalidate_gateways.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_url_only_collision_is_not_reported_as_a_name_clash(catalog_service, test_db):
+    # Given: another row already holds this registration's internal url under a different name
+    context = AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-42")
+    registration = RegistrationServer(name="devbox-tools")
+    stable_id = stable_proxy_id(context, registration)
+    test_db.add(DbGateway(name="something-else", slug="something-else", url=f"reverse-proxy://catalog/{stable_id}", transport="PROXIED", capabilities={}, owner_email="alice@example.com", team_id="team-42", visibility="private", created_via="reverse_proxy"))
+    test_db.commit()
+
+    # When / Then: a plain catalog conflict, so the device is not told to rename
+    with pytest.raises(ReverseProxyCatalogConflictError) as caught:
+        await catalog_service.register(test_db, context, registration)
+    assert caught.type is ReverseProxyCatalogConflictError
