@@ -62,7 +62,7 @@ def catalog_service(test_db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_team_registration_inherits_scope_on_gateway_and_virtual_server(catalog_service, test_db):
+async def test_team_registration_is_owner_only_and_keeps_the_team(catalog_service, test_db):
     # Given
     context = AuthenticatedRegistrationContext(owner_email=" Owner@Example.com ", team_id="TEAM-42")
     registration = RegistrationServer(name="team-proxy", description="Team server")
@@ -73,14 +73,14 @@ async def test_team_registration_inherits_scope_on_gateway_and_virtual_server(ca
     # Then
     gateway, server = test_db.get(DbGateway, result.stable_id), test_db.get(DbServer, result.stable_id)
     assert gateway is not None and server is not None
-    assert (gateway.owner_email, gateway.team_id, gateway.visibility) == ("owner@example.com", "team-42", "team")
-    assert (server.owner_email, server.team_id, server.visibility) == ("owner@example.com", "team-42", "team")
+    assert (gateway.owner_email, gateway.team_id, gateway.visibility) == ("owner@example.com", "team-42", "private")
+    assert (server.owner_email, server.team_id, server.visibility) == ("owner@example.com", "team-42", "private")
     assert server.tools == [] and server.resources == [] and server.prompts == []
     assert server.created_via == "reverse_proxy"
 
 
 @pytest.mark.asyncio
-async def test_registration_without_trusted_team_falls_back_to_public(catalog_service, test_db):
+async def test_registration_without_trusted_team_is_owner_only_never_public(catalog_service, test_db):
     # Given
     context = AuthenticatedRegistrationContext(owner_email="owner@example.com", team_id=None)
 
@@ -90,8 +90,68 @@ async def test_registration_without_trusted_team_falls_back_to_public(catalog_se
     # Then
     gateway, server = test_db.get(DbGateway, result.stable_id), test_db.get(DbServer, result.stable_id)
     assert gateway is not None and server is not None
-    assert (gateway.team_id, gateway.visibility) == (None, "public")
-    assert (server.team_id, server.visibility) == (None, "public")
+    assert (gateway.team_id, gateway.visibility) == (None, "private")
+    assert (server.team_id, server.visibility) == (None, "private")
+
+
+@pytest.mark.asyncio
+async def test_teammates_publish_the_same_name_side_by_side(catalog_service, test_db):
+    # Given
+    alice = AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-42")
+    bob = AuthenticatedRegistrationContext(owner_email="bob@example.com", team_id="team-42")
+
+    # When
+    first = await catalog_service.register(test_db, alice, RegistrationServer(name="devbox-tools"))
+    second = await catalog_service.register(test_db, bob, RegistrationServer(name="devbox-tools"))
+
+    # Then
+    assert first.stable_id != second.stable_id
+    rows = test_db.query(DbGateway).filter(DbGateway.slug == "devbox-tools").all()
+    assert sorted((g.owner_email, g.visibility) for g in rows) == [("alice@example.com", "private"), ("bob@example.com", "private")]
+
+
+@pytest.mark.asyncio
+async def test_the_client_cannot_choose_scope(catalog_service, test_db):
+    # Given: a register frame that asks for public visibility and another team
+    context = AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-42")
+    registration = RegistrationServer.model_validate({"name": "wide-open", "visibility": "public", "team_id": "team-other", "owner_email": "eve@example.com"})
+
+    # When
+    result = await catalog_service.register(test_db, context, registration)
+
+    # Then
+    gateway = test_db.get(DbGateway, result.stable_id)
+    assert (gateway.owner_email, gateway.team_id, gateway.visibility) == ("alice@example.com", "team-42", "private")
+
+
+@pytest.mark.asyncio
+async def test_a_team_entry_of_the_same_name_still_conflicts(catalog_service, test_db):
+    # Given
+    context = AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-42")
+    test_db.add(DbGateway(name="slack", slug="slack", url="https://example.com/mcp", transport="STREAMABLEHTTP", capabilities={}, owner_email="admin@example.com", team_id="team-42", visibility="team", created_via="api"))
+    test_db.commit()
+
+    # When / Then
+    with pytest.raises(ReverseProxyCatalogConflictError):
+        await catalog_service.register(test_db, context, RegistrationServer(name="slack"))
+
+
+@pytest.mark.asyncio
+async def test_reconnect_keeps_sharing_widened_after_registration(catalog_service, test_db):
+    # Given: an owner-only entry that sharing later widened to the team
+    context = AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-42")
+    first = await catalog_service.register(test_db, context, RegistrationServer(name="shared-later"))
+    test_db.get(DbGateway, first.stable_id).visibility = "team"
+    test_db.get(DbServer, first.stable_id).visibility = "team"
+    test_db.commit()
+
+    # When
+    second = await catalog_service.register(test_db, context, RegistrationServer(name="shared-later"))
+
+    # Then
+    assert second.stable_id == first.stable_id
+    assert test_db.get(DbGateway, first.stable_id).visibility == "team"
+    assert test_db.get(DbServer, first.stable_id).visibility == "team"
 
 
 @pytest.mark.asyncio
@@ -368,7 +428,7 @@ async def test_internal_reverse_proxy_registration_persists_without_network_init
         name="proxied-alpha",
         description="Local alpha server",
         owner_email="owner@example.com",
-        scope=ReverseProxyGatewayScope(team_id=None, visibility="public"),
+        scope=ReverseProxyGatewayScope(team_id=None, visibility="private"),
     )
 
     # When
@@ -384,7 +444,7 @@ async def test_internal_reverse_proxy_registration_persists_without_network_init
     assert persisted.enabled is True
     assert persisted.reachable is True
     assert persisted.owner_email == "owner@example.com"
-    assert persisted.visibility == "public"
+    assert persisted.visibility == "private"
     gateway_service._initialize_gateway_with_timeout.assert_not_awaited()
     gateway_service._notify_gateway_added.assert_awaited_once()
     registry_cache.invalidate_gateways.assert_awaited_once()
@@ -405,7 +465,7 @@ async def test_internal_reverse_proxy_registration_reconciles_matching_gateway(t
         name="proxied-reconnect",
         description=None,
         owner_email="owner@example.com",
-        scope=ReverseProxyGatewayScope(team_id=None, visibility="public"),
+        scope=ReverseProxyGatewayScope(team_id=None, visibility="private"),
     )
 
     # When

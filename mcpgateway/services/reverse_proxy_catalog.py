@@ -33,7 +33,7 @@ from mcpgateway.services.server_service import ServerNameConflictError, ServerSe
 from mcpgateway.utils.create_slug import slugify
 
 
-CatalogVisibility = Literal["team", "public"]
+CatalogVisibility = Literal["private"]
 # Stable forever: changing this namespace would orphan existing proxy catalog rows.
 REVERSE_PROXY_CATALOG_NAMESPACE: Final = uuid.UUID("8f3b2d0f-7dc0-5c87-8a1e-a56f4d2bb8d1")
 
@@ -57,8 +57,8 @@ class AuthenticatedRegistrationContext:
 
     @property
     def visibility(self) -> CatalogVisibility:
-        """Use team scope only when trusted team context exists."""
-        return "team" if self.canonical_team_id is not None else "public"
+        """New entries are owner-only. The trusted team stays on the row, so sharing can widen it later."""
+        return "private"
 
     @property
     def scope_key(self) -> str:
@@ -96,7 +96,7 @@ class ReverseProxyGatewayScope:
     """Trusted catalog scope for an internal reverse-proxy gateway."""
 
     team_id: str | None
-    visibility: Literal["team", "public"]
+    visibility: CatalogVisibility
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +114,15 @@ def stable_proxy_id(context: AuthenticatedRegistrationContext, server: Registrat
     """Derive a deterministic UUIDv5 from authenticated owner, scope, and normalized name."""
     identity = f"owner={context.canonical_owner_email}|scope={context.scope_key}|name={slugify(server.name)}"
     return uuid.uuid5(REVERSE_PROXY_CATALOG_NAMESPACE, identity).hex
+
+
+def _owner_name_conflict(model, name_column, name: str, team_id: str | None, owner_email: str):
+    """Rows whose name the owner would also see: public ones, and their team's shared or own ones.
+
+    Visibility is left out of reconnect identity, so an entry that sharing widened keeps its scope.
+    """
+    in_team = and_(model.team_id == team_id, or_(model.visibility == "team", model.owner_email == owner_email))
+    return and_(name_column == name, or_(model.visibility == "public", in_team))
 
 
 def _lock_catalog_registration(db: Session, catalog_id: str) -> None:
@@ -151,9 +160,7 @@ class ReverseProxyCatalogService:
         lock_id = uuid.uuid5(REVERSE_PROXY_CATALOG_NAMESPACE, lock_identity).hex
         try:
             _lock_catalog_registration(db, lock_id)
-            server_scope_conflict = and_(DbServer.name == registration.name, DbServer.visibility == scope.visibility)
-            if scope.visibility == "team":
-                server_scope_conflict = and_(server_scope_conflict, DbServer.team_id == scope.team_id)
+            server_scope_conflict = _owner_name_conflict(DbServer, DbServer.name, registration.name, scope.team_id, context.canonical_owner_email)
             candidates = db.execute(select(DbServer).where(or_(DbServer.id == catalog_id, server_scope_conflict)).with_for_update()).scalars().all()
             existing = next((candidate for candidate in candidates if candidate.id == catalog_id), None)
             conflicts = [candidate for candidate in candidates if candidate.id != catalog_id]
@@ -166,7 +173,6 @@ class ReverseProxyCatalogService:
                     and existing.name == registration.name
                     and existing.owner_email == context.canonical_owner_email
                     and existing.team_id == scope.team_id
-                    and existing.visibility == scope.visibility
                 )
                 if not identity_matches:
                     raise ReverseProxyCatalogConflictError(stable_id=catalog_id, reason="stable ID belongs to different virtual server state")
@@ -304,9 +310,7 @@ class ReverseProxyCatalogService:
         internal_url = f"reverse-proxy://catalog/{registration.stable_id}"
         scope = registration.scope
         slug_name = slugify(registration.name)
-        scope_conflict = and_(DbGateway.slug == slug_name, DbGateway.visibility == scope.visibility)
-        if scope.visibility == "team":
-            scope_conflict = and_(scope_conflict, DbGateway.team_id == scope.team_id)
+        scope_conflict = _owner_name_conflict(DbGateway, DbGateway.slug, slug_name, scope.team_id, registration.owner_email)
 
         candidates = db.execute(select(DbGateway).where(or_(DbGateway.id == registration.stable_id, DbGateway.url == internal_url, scope_conflict)).with_for_update()).scalars().all()
         existing = next((candidate for candidate in candidates if candidate.id == registration.stable_id), None)
@@ -323,7 +327,6 @@ class ReverseProxyCatalogService:
                 and existing.name == registration.name
                 and existing.owner_email == registration.owner_email
                 and existing.team_id == scope.team_id
-                and existing.visibility == scope.visibility
             )
             if not identity_matches:
                 raise GatewayNameConflictError(existing.slug, enabled=existing.enabled, gateway_id=existing.id, visibility=existing.visibility)
