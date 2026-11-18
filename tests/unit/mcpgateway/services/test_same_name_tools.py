@@ -52,3 +52,4 @@ async def test_on_still_refuses_different_upstreams(monkeypatch, other):
     monkeypatch.setattr(settings, "tool_same_name_across_teams", True)
     with pytest.raises(ToolInvocationError, match="ambiguous"):
         await _select(ToolService(), [_tool("a", "g1"), other])
+
