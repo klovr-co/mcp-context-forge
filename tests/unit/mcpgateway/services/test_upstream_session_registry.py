@@ -161,6 +161,32 @@ async def test_acquire_reuses_same_session_for_same_key(registry, factory_and_re
 
 
 @pytest.mark.asyncio
+async def test_a_different_login_in_the_same_session_gets_its_own_upstream(registry, factory_and_records):
+    """A call that carries another account's token must not ride a session opened with the first one."""
+    _, created = factory_and_records
+
+    async def call(token: str):
+        async with registry.acquire(
+            downstream_session_id="s1",
+            gateway_id="g1",
+            url="http://upstream/mcp",
+            headers={"Authorization": f"Bearer {token}", "x-mcp-session-id": "s1"},
+            transport_type=TransportType.STREAMABLE_HTTP,
+        ) as upstream:
+            return upstream.session
+
+    first = await call("first-login")
+    second = await call("second-login")
+    first_again = await call("first-login")
+
+    assert len(created) == 2
+    assert first is not second
+    assert first_again is first
+    assert registry.snapshot().active_sessions == 2
+    assert await registry.evict_session("s1") == 2
+
+
+@pytest.mark.asyncio
 async def test_isolation_different_downstream_sessions_get_different_upstream_sessions(registry, factory_and_records):
     """The core #4205 invariant: session A must not share upstream with session B."""
     _, created = factory_and_records
@@ -1838,7 +1864,7 @@ async def test_evict_key_returns_false_when_key_already_gone(registry):
 
     Covers upstream_session_registry.py:606-607 — the `session is None: return False` branch.
     """
-    result = await registry._evict_key(("unknown-session", "unknown-gateway"))  # pylint: disable=protected-access
+    result = await registry._evict_key(("unknown-session", "unknown-gateway", ""))  # pylint: disable=protected-access
     assert result is False
 
 
@@ -1905,7 +1931,7 @@ async def test_close_session_short_circuits_when_already_closed(registry, factor
     _, _session_obj, _event, _task = created[0]
 
     # First eviction drains the session cleanly.
-    key = ("s1", "g1")
+    key = ("s1", "g1", "")
     assert await registry._evict_key(key) is True  # pylint: disable=protected-access
 
     # _close_session on the already-closed UpstreamSession must be a no-op.

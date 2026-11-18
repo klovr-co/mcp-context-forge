@@ -34,7 +34,7 @@ async def test_session_none_check_with_existing_none_session():
     # Mock _create_session to return None (simulating a creation failure)
     with patch.object(registry, "_create_session", return_value=None):
         # Manually inject a None session into the cache
-        key = ("test-session", "test-gateway")
+        key = ("test-session", "test-gateway", "")
         registry._sessions[key] = None
 
         # Attempt to acquire - should raise RuntimeError
@@ -73,7 +73,7 @@ async def test_session_transport_error_eviction():
     mock_session.is_closed = False
 
     with patch.object(registry, "_create_session", return_value=mock_session):
-        key = ("test-session", "test-gateway")
+        key = ("test-session", "test-gateway", "")
 
         # Acquire session and simulate transport error
         try:
@@ -101,7 +101,7 @@ async def test_session_closed_resource_error_eviction():
     mock_session.is_closed = False
 
     with patch.object(registry, "_create_session", return_value=mock_session):
-        key = ("test-session", "test-gateway")
+        key = ("test-session", "test-gateway", "")
 
         # Acquire session and simulate closed resource error
         try:
@@ -127,7 +127,7 @@ async def test_session_broken_resource_error_eviction():
     mock_session.is_closed = False
 
     with patch.object(registry, "_create_session", return_value=mock_session):
-        key = ("test-session", "test-gateway")
+        key = ("test-session", "test-gateway", "")
 
         # Acquire session and simulate broken resource error
         try:
@@ -153,7 +153,7 @@ async def test_session_other_error_no_eviction():
     mock_session.is_closed = False
 
     with patch.object(registry, "_create_session", return_value=mock_session):
-        key = ("test-session", "test-gateway")
+        key = ("test-session", "test-gateway", "")
 
         # Acquire session and simulate non-transport error
         try:
