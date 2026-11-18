@@ -76,7 +76,7 @@ async def test_plugin_narrows_and_cannot_add(monkeypatch):
     kwargs = manager.invoke_hook.call_args.kwargs
     assert kwargs["global_context"].user == "a@example.com"
     assert kwargs["global_context"].server_id == "s1"
-    assert [item.model_dump() for item in kwargs["payload"].tools][0] == {"id": "t0", "name": "search", "original_name": "search", "gateway_id": "g1", "team_id": "team1"}
+    assert [item.model_dump() for item in kwargs["payload"].tools][0] == {"id": "t0", "name": "search", "original_name": "search", "gateway_id": "g1", "team_id": "team1", "gateway_arguments": None, "required_gateway_arguments": []}
 
 
 @pytest.mark.asyncio
