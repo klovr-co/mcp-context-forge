@@ -334,10 +334,10 @@ class ReverseProxyCatalogService:
         existing = next((candidate for candidate in candidates if candidate.id == registration.stable_id), None)
         conflicts = [candidate for candidate in candidates if candidate.id != registration.stable_id]
         if conflicts:
-            conflict = conflicts[0]
-            if conflict.slug == slug_name:
+            name_clash = db.execute(select(DbGateway.id).where(scope_conflict, DbGateway.id != registration.stable_id).limit(1)).first()
+            if name_clash is not None:
                 raise ReverseProxyNameConflictError(stable_id=registration.stable_id, reason=f"gateway name {slug_name!r} is already registered or visible to this owner", name=registration.name)
-            raise ReverseProxyCatalogConflictError(stable_id=registration.stable_id, reason=f"internal gateway url is already held by gateway {conflict.id}")
+            raise ReverseProxyCatalogConflictError(stable_id=registration.stable_id, reason="internal gateway url is already held by another gateway")
 
         if existing is not None:
             identity_matches = (

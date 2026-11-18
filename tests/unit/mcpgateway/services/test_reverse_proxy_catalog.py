@@ -801,3 +801,33 @@ async def test_a_url_only_collision_is_not_reported_as_a_name_clash(catalog_serv
     with pytest.raises(ReverseProxyCatalogConflictError) as caught:
         await catalog_service.register(test_db, context, registration)
     assert caught.type is ReverseProxyCatalogConflictError
+
+
+@pytest.mark.asyncio
+async def test_another_owners_row_holding_the_url_with_the_same_slug_is_not_a_name_clash(catalog_service, test_db):
+    # Given: a row of someone else's holds this registration's internal url and happens to share the slug
+    context = AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-42")
+    registration = RegistrationServer(name="devbox-tools")
+    stable_id = stable_proxy_id(context, registration)
+    test_db.add(DbGateway(name="devbox-tools", slug="devbox-tools", url=f"reverse-proxy://catalog/{stable_id}", transport="PROXIED", capabilities={}, owner_email="mallory@example.com", team_id="team-9", visibility="private", created_via="reverse_proxy"))
+    test_db.commit()
+
+    # When / Then: alice can't see that row by name, so it's a plain catalog conflict
+    with pytest.raises(ReverseProxyCatalogConflictError) as caught:
+        await catalog_service.register(test_db, context, registration)
+    assert caught.type is ReverseProxyCatalogConflictError
+
+
+@pytest.mark.asyncio
+async def test_a_real_name_clash_wins_over_a_url_holder(catalog_service, test_db):
+    # Given: one row holds the internal url, another is a real name clash for alice
+    context = AuthenticatedRegistrationContext(owner_email="alice@example.com", team_id="team-42")
+    registration = RegistrationServer(name="devbox-tools")
+    stable_id = stable_proxy_id(context, registration)
+    test_db.add(DbGateway(name="other", slug="other", url=f"reverse-proxy://catalog/{stable_id}", transport="PROXIED", capabilities={}, owner_email="mallory@example.com", team_id="team-9", visibility="private", created_via="reverse_proxy"))
+    test_db.add(DbGateway(name="devbox-tools", slug="devbox-tools", url="https://example.com/mcp", transport="STREAMABLEHTTP", capabilities={}, owner_email="alice@example.com", team_id="team-1", visibility="private", created_via="api"))
+    test_db.commit()
+
+    # When / Then
+    with pytest.raises(ReverseProxyNameConflictError):
+        await catalog_service.register(test_db, context, registration)
