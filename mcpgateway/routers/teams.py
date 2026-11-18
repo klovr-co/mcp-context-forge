@@ -87,6 +87,11 @@ teams_router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
+
+async def _is_platform_admin(db: Session, current_user: dict) -> bool:
+    """Platform admins may manage any team's members, as they may already update or delete any team."""
+    return await PermissionService(db).check_platform_admin_permission(current_user["email"], token_teams=current_user.get("token_teams"))
+
 @teams_router.post("/", response_model=TeamCreateResponse, status_code=status.HTTP_201_CREATED)
 @require_permission("teams.create")
 async def create_team(
@@ -598,7 +603,7 @@ async def list_team_members(
 
         # Check if user has access to the team
         user_role = await service.get_user_role_in_team(current_user["email"], team_id)
-        if not user_role:
+        if not user_role and not await _is_platform_admin(db, current_user):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_ACCESS_DENIED_MSG)
 
         # Get members - service returns different types based on parameters:
@@ -664,9 +669,9 @@ async def add_team_member(team_id: str, request: TeamMemberAddRequest, current_u
     try:
         service = TeamManagementService(db)
 
-        # Check if user is team owner
+        # Check if user is team owner or platform admin
         role = await service.get_user_role_in_team(current_user["email"], team_id)
-        if role != "owner":
+        if role != "owner" and not await _is_platform_admin(db, current_user):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_ACCESS_DENIED_MSG)
 
         # Add member to team and get the created member directly
@@ -719,9 +724,9 @@ async def update_team_member(
     try:
         service = TeamManagementService(db)
 
-        # Check if user is team owner
+        # Check if user is team owner or platform admin
         role = await service.get_user_role_in_team(current_user["email"], team_id)
-        if role != "owner":
+        if role != "owner" and not await _is_platform_admin(db, current_user):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_ACCESS_DENIED_MSG)
 
         success = await service.update_member_role(team_id, user_email, request.role)
@@ -766,9 +771,9 @@ async def remove_team_member(team_id: str, user_email: str, current_user: dict =
     try:
         service = TeamManagementService(db)
 
-        # Users can remove themselves, or owners can remove others
+        # Users can remove themselves; owners and platform admins can remove others
         current_user_role = await service.get_user_role_in_team(current_user["email"], team_id)
-        if current_user["email"] != user_email and current_user_role != "owner":
+        if current_user["email"] != user_email and current_user_role != "owner" and not await _is_platform_admin(db, current_user):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_ACCESS_DENIED_MSG)
 
         success = await service.remove_member_from_team(team_id, user_email)

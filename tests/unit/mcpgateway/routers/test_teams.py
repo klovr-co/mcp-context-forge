@@ -1321,7 +1321,7 @@ class TestTeamsRouter:
 
             from mcpgateway.routers.teams import list_team_members
 
-            with pytest.raises(HTTPException) as exc_info:
+            with mock_permission_check(is_admin=False), pytest.raises(HTTPException) as exc_info:
                 await list_team_members(team_id, current_user=mock_user_context, db=mock_db)
 
             assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
@@ -1443,7 +1443,7 @@ class TestTeamsRouter:
 
             from mcpgateway.routers.teams import remove_team_member
 
-            with pytest.raises(HTTPException) as exc_info:
+            with mock_permission_check(is_admin=False), pytest.raises(HTTPException) as exc_info:
                 await remove_team_member(team_id, user_email, current_user=mock_user_context, db=mock_db)
 
             assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
