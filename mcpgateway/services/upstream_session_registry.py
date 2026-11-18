@@ -190,28 +190,9 @@ _IDENTITY_FIELDS = frozenset({"downstream_session_id", "gateway_id", "url", "tra
 SessionKey = tuple[str, str, str]
 """(downstream_session_id, gateway_id, login fingerprint)."""
 
-# Headers that never carry a login. Every other header counts, so a custom auth header of any name is covered.
-_NON_CREDENTIAL_HEADERS = frozenset(
-    {
-        "accept",
-        "accept-encoding",
-        "accept-language",
-        "content-type",
-        "user-agent",
-        "mcp-protocol-version",
-        "mcp-session-id",
-        "x-mcp-session-id",
-        "last-event-id",
-        "traceparent",
-        "tracestate",
-        "baggage",
-        "x-request-id",
-        "x-correlation-id",
-    }
-)
-
-MAX_LOGINS_PER_GATEWAY = 4
-"""Upstream sessions one downstream session keeps per gateway, one per login; the least recently used goes first."""
+# Headers the gateway sets itself for routing and tracing. Every other header counts, so a credential
+# header of any name, including one a gateway is configured to send, separates sessions.
+_GATEWAY_SET_HEADERS = frozenset({"mcp-session-id", "x-mcp-session-id", "traceparent", "tracestate", "baggage"})
 
 
 def login_fingerprint(headers: Optional[Mapping[str, str]]) -> str:
@@ -221,7 +202,7 @@ def login_fingerprint(headers: Optional[Mapping[str, str]]) -> str:
         headers: Headers the upstream session would be opened with.
 
     Returns:
-        A short hex digest, or ``""`` when every header is a known non-credential one.
+        A short hex digest, or ``""`` when every header is one the gateway sets itself.
 
     Examples:
         >>> login_fingerprint(None)
@@ -237,7 +218,7 @@ def login_fingerprint(headers: Optional[Mapping[str, str]]) -> str:
     """
     if not headers:
         return ""
-    credentials = sorted((name.lower(), value) for name, value in headers.items() if name.lower() not in _NON_CREDENTIAL_HEADERS)
+    credentials = sorted((name.lower(), value) for name, value in headers.items() if name.lower() not in _GATEWAY_SET_HEADERS)
     if not credentials:
         return ""
     digest = hashlib.sha256()
@@ -1015,6 +996,7 @@ class UpstreamSessionRegistry:
         ``login`` fingerprints the credential headers, so a call that carries a
         different login (another account's token, or a refreshed one) gets its
         own upstream session instead of riding one opened with other credentials.
+        Sessions for earlier logins close with the downstream session (``evict_session``).
 
         Concurrent acquires for the same key serialize on the per-key lock
         across the check-or-create phase, then on the per-session operation lock
@@ -1065,8 +1047,6 @@ class UpstreamSessionRegistry:
             session.last_used = time.time()
             session.use_count += 1
 
-        await self._evict_logins_over_limit(key)
-
         # Hand out the session with the operation lock held. MCP SDK
         # ClientSession.send_request() mutates its JSON-RPC id counter without
         # synchronization, so concurrent callers on one session can cross-wire
@@ -1087,19 +1067,6 @@ class UpstreamSessionRegistry:
         # All other exceptions (tool-level errors from the upstream, caller
         # application errors) intentionally leave the session in place — the
         # transport is fine, the caller just didn't like the result.
-
-    async def _evict_logins_over_limit(self, key: SessionKey) -> None:
-        """Keep at most MAX_LOGINS_PER_GATEWAY sessions per (downstream session, gateway), so refreshed tokens don't pile up.
-
-        Runs after the key lock is released: evicting takes the other keys' locks.
-        """
-        async with self._global_lock:
-            siblings = [k for k, s in self._sessions.items() if k[:2] == key[:2] and k != key]
-            extra = len(siblings) + 1 - MAX_LOGINS_PER_GATEWAY
-            # Never close a session in the middle of a call; an idle one goes on the next acquire instead.
-            idle = sorted((k for k in siblings if not self._sessions[k].operation_lock.locked()), key=lambda k: self._sessions[k].last_used)
-        if extra > 0 and idle:
-            await self._evict_keys_in_parallel(idle[:extra])
 
     async def evict_session(self, downstream_session_id: str) -> int:
         """Close and remove every upstream session owned by this downstream session id.
