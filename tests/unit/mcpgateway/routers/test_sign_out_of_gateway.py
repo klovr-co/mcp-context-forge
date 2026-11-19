@@ -117,12 +117,55 @@ async def test_a_failed_delete_is_500_and_the_login_stays(test_db, request_, sto
     assert _logins(test_db, stored.gateway_id) == sorted([stored.alice, stored.bob])
 
 
+def _failing_token_reads(db, fail_on):
+    """Make the fail_on-th SELECT on oauth_tokens raise, like a database that went away."""
+    real_execute = db.execute
+    seen = {"n": 0}
+
+    def execute(statement, *args, **kwargs):
+        if "oauth_tokens" in str(statement) and str(statement).lstrip().upper().startswith("SELECT"):
+            seen["n"] += 1
+            if seen["n"] == fail_on:
+                raise RuntimeError("database went away")
+        return real_execute(statement, *args, **kwargs)
+
+    return patch.object(db, "execute", side_effect=execute)
+
+
 @pytest.mark.asyncio
-async def test_a_failed_read_is_500(test_db, request_, stored):
-    with patch("mcpgateway.routers.oauth_router._caller_login_stored", new=AsyncMock(side_effect=RuntimeError("db down"))):
+async def test_a_failed_first_read_is_500_and_nothing_deleted(test_db, request_, stored):
+    with _failing_token_reads(test_db, fail_on=1):
         with pytest.raises(HTTPException) as e:
             await sign_out_of_gateway(stored.gateway_id, request_, current_user=_user(stored.alice), db=test_db)
     assert e.value.status_code == 500
+    assert _logins(test_db, stored.gateway_id) == sorted([stored.alice, stored.bob])
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_after_the_delete_is_500(test_db, request_, stored):
+    """Reads in order: the route's check, the backend's own lookup, the route's confirmation."""
+    with _failing_token_reads(test_db, fail_on=3):
+        with pytest.raises(HTTPException) as e:
+            await sign_out_of_gateway(stored.gateway_id, request_, current_user=_user(stored.alice), db=test_db)
+    assert e.value.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_no_identity_is_refused_and_nothing_deleted(test_db, request_, stored):
+    with pytest.raises(HTTPException) as e:
+        await sign_out_of_gateway(stored.gateway_id, request_, current_user=_AttrDict(), db=test_db)
+    assert e.value.status_code == 401
+    assert _logins(test_db, stored.gateway_id) == sorted([stored.alice, stored.bob])
+
+
+@pytest.mark.asyncio
+async def test_without_gateways_read_is_refused_and_nothing_deleted(test_db, request_, stored, mock_permission_service):
+    mock_permission_service.check_permission = AsyncMock(return_value=False)
+    with pytest.raises(HTTPException) as e:
+        await sign_out_of_gateway(stored.gateway_id, request_, current_user=_user(stored.alice), db=test_db)
+    assert e.value.status_code == 403
+    assert _logins(test_db, stored.gateway_id) == sorted([stored.alice, stored.bob])
+    mock_permission_service.check_permission.assert_awaited()
 
 
 @pytest.mark.asyncio
