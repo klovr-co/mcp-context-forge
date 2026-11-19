@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 # First-Party
 from mcpgateway.db import Gateway
 from mcpgateway.routers.oauth_router import oauth_router, sign_out_of_gateway
-from mcpgateway.schemas import EmailUserResponse
 
 
 @pytest.fixture
@@ -43,15 +42,19 @@ def gateway():
     return gw
 
 
+class _AttrDict(dict):
+    """``@require_permission`` needs a real dict (the runtime type); the router also reads attributes."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
 @pytest.fixture
 def user():
-    u = Mock(spec=EmailUserResponse)
-    u.get = Mock(return_value="alice@example.com")
-    u.email = "alice@example.com"
-    u.full_name = "Alice"
-    u.is_active = True
-    u.is_admin = False
-    return u
+    return _AttrDict(email="alice@example.com", full_name="Alice", is_active=True, is_admin=False)
 
 
 def storage(revoked):
