@@ -12007,6 +12007,11 @@ async def _handle_rpc_authenticated(request: Request, db: Session, user):
                 if not _trusted_internal_mcp_dispatch:
                     # /rpc is a 2025-era wire; an owner-worker dispatch is internal and keeps the value for the originating worker
                     result = _object_only_structured_content(result)
+            except ToolInvocationError as e:
+                # The tool itself failed (not signed in, timeout): a tool error the caller can read, as the
+                # streamable HTTP transport answers, not the catch-all -32603 "Internal error".
+                logger.warning("Tool invocation failed for '%s': %s", params.get("name"), e)
+                result = {"content": [{"type": "text", "text": str(e)}], "isError": True}
             finally:
                 # Release transaction after tools/call completes
                 db.commit()
