@@ -1613,6 +1613,48 @@ async def get_oauth_status(
         raise HTTPException(status_code=500, detail="Failed to get OAuth status")
 
 
+@oauth_router.delete("/tokens/{gateway_id}")
+@require_permission(Permissions.GATEWAYS_READ)
+async def sign_out_of_gateway(
+    gateway_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user_with_permissions),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Sign the caller out of an OAuth gateway: delete the caller's own stored token.
+
+    Only ever the caller's own login, derived from the authenticated identity, never a
+    client-supplied user. Other people's logins and the gateway itself are untouched. The
+    gateway asks the caller to authorize again on their next call.
+
+    Args:
+        gateway_id: ID of the gateway
+        request: Request with token-scoping context.
+        current_user: Authenticated user (enforces authentication)
+        db: Database session
+
+    Returns:
+        ``{"gateway_id": ..., "signed_out": bool}``; ``signed_out`` is False when no login was stored.
+
+    Raises:
+        HTTPException: If not authenticated, not authorized, gateway not found, or error
+    """
+    gateway = db.execute(select(Gateway).where(Gateway.id == gateway_id)).scalar_one_or_none()
+    if not gateway:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+    await _enforce_gateway_access(gateway_id, gateway, current_user, db, request=request)
+
+    requester_email = get_user_email(current_user)
+    if requester_email == "unknown" or not requester_email.strip():
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        signed_out = await TokenStorageService(db, _build_user_context(current_user)).revoke_user_tokens(gateway_id, requester_email)
+    except Exception as e:
+        logger.exception("OAuth sign-out failed for gateway=%s user=%s: %s", gateway_id, requester_email, str(e))
+        raise HTTPException(status_code=500, detail="Failed to sign out of gateway")
+    return {"gateway_id": gateway_id, "signed_out": bool(signed_out)}
+
+
 OAUTH_STATUS_BATCH_MAX_IDS = 100
 
 # Upper bound on how long the batch endpoint will wait for the whole
