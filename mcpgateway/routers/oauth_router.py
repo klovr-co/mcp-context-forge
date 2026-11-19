@@ -40,6 +40,7 @@ from mcpgateway.schemas import EmailUserResponse
 from mcpgateway.services.dcr_service import DcrError, DcrService, validate_issuer_scoped_endpoint
 from mcpgateway.services.encryption_service import protect_oauth_config_for_storage
 from mcpgateway.services.gateway_service import GatewayToolNameConflictError
+from mcpgateway.services.oauth_account import signed_in_account
 from mcpgateway.services.oauth_manager import OAuthError, OAuthManager
 from mcpgateway.services.team_management_service import TeamManagementService
 from mcpgateway.services.token_storage_service import TokenStorageService
@@ -1521,6 +1522,27 @@ async def _get_caller_token_status(db: Session, current_user: Any, gateway_id: s
     return _token_info_to_status_payload(info)
 
 
+async def _add_account(db: Session, current_user: Any, gateway: Gateway, token_status: Dict[str, Any]) -> None:
+    """Name whose account the caller's saved sign-in is, when the authorization server says.
+
+    Args:
+        db: Active database session.
+        current_user: Authenticated requester context.
+        gateway: The gateway, with its ``oauth_config``.
+        token_status: The caller's ``user_token_status``; ``account`` is added to it.
+    """
+    if not token_status.get("authorized"):
+        return
+    token_storage = TokenStorageService(db, _build_user_context(current_user))
+    try:
+        account = await signed_in_account(token_storage, gateway.id, gateway.oauth_config, get_user_email(current_user), token_status.get("updated_at"))
+    except Exception as e:  # noqa: BLE001 - the status stands without an account
+        logger.warning("Couldn't name the account of gateway %s's sign-in: %s", SecurityValidator.sanitize_log_message(gateway.id), e)
+        return
+    if account:
+        token_status["account"] = account
+
+
 def _build_oauth_status_payload(gateway: Gateway) -> Dict[str, Any]:
     """Build the OAuth config portion of a gateway's status payload (no I/O).
 
@@ -1565,6 +1587,7 @@ def _build_oauth_status_payload(gateway: Gateway) -> Dict[str, Any]:
 async def get_oauth_status(
     gateway_id: str,
     request: Request,
+    include_account: bool = False,
     current_user: dict = Depends(get_current_user_with_permissions),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -1577,8 +1600,13 @@ async def get_oauth_status(
     state (``user_token_status``), derived from authenticated identity - never
     a client-supplied user. This is per-caller and never shared across users.
 
+    With ``include_account=true`` that status also names whose account the
+    caller's sign-in is (``account``: ``sub``, and ``email`` when given), as the
+    authorization server's UserInfo endpoint answers for the caller's own token.
+
     Args:
         gateway_id: ID of the gateway
+        include_account: Also ask the authorization server whose account the caller's sign-in is.
         current_user: Authenticated user (enforces authentication)
         db: Database session
         request: Request with token-scoping context.
@@ -1601,6 +1629,8 @@ async def get_oauth_status(
         payload = _build_oauth_status_payload(gateway)
         if payload.get("grant_type") == "authorization_code":
             payload["user_token_status"] = await _get_caller_token_status(db, current_user, gateway_id)
+            if include_account:
+                await _add_account(db, current_user, gateway, payload["user_token_status"])
         return payload
 
     except HTTPException:
