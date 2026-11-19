@@ -1537,7 +1537,8 @@ async def _add_account(db: Session, current_user: Any, gateway: Gateway, token_s
     try:
         account = await signed_in_account(token_storage, gateway.id, gateway.oauth_config, get_user_email(current_user), token_status.get("updated_at"))
     except Exception as e:  # noqa: BLE001 - the status stands without an account
-        logger.warning("Couldn't name the account of gateway %s's sign-in: %s", SecurityValidator.sanitize_log_message(gateway.id), e)
+        # Only the error's type: its text could carry a URL or a server's answer.
+        logger.warning("Couldn't name the account of gateway %s's sign-in: %s", SecurityValidator.sanitize_log_message(gateway.id), type(e).__name__)
         return
     if account:
         token_status["account"] = account

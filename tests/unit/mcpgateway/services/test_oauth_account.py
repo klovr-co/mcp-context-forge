@@ -8,6 +8,7 @@ server that publishes its metadata and a UserInfo endpoint.
 """
 
 # Standard
+import asyncio
 from contextlib import asynccontextmanager
 import socket
 from types import SimpleNamespace
@@ -38,18 +39,31 @@ class StandInServer:
     def __init__(self, userinfo_endpoint=USERINFO, userinfo_status=200):
         self.userinfo_endpoint = userinfo_endpoint
         self.userinfo_status = userinfo_status
-        self.accounts = {"token-email": {"sub": "u-1", "email": "maxine@example.com", "email_verified": True}, "token-openid": {"sub": "u-2"}}
+        self.accounts = {
+            "token-email": {"sub": "u-1", "email": "maxine@example.com", "email_verified": True},
+            "token-openid": {"sub": "u-2"},
+            "token-unverified": {"sub": "u-3", "email": "who@example.com", "email_verified": False},
+            "token-silent": {"sub": "u-4", "email": "silent@example.com"},
+            "token-huge": {"sub": "u-5", "email": "big@example.com", "padding": "x" * 20000},
+        }
+        self.metadata_padding = 0
+        self.delay = 0.0
         self.requests = []
+        self.verify = []
 
-    def handle(self, request: httpx.Request) -> httpx.Response:
+    async def handle(self, request: httpx.Request) -> httpx.Response:
         host = request.headers.get("host")
         self.requests.append((host, request.url.path, request.headers.get("authorization")))
+        if self.delay:
+            await asyncio.sleep(self.delay)
         if host != "as.example.com":
             return httpx.Response(200, json={"sub": "someone-else"})
         if request.url.path == "/.well-known/oauth-authorization-server/auth/v1":
             metadata = {"issuer": ISSUER, "authorization_endpoint": f"{ISSUER}/oauth/authorize", "token_endpoint": f"{ISSUER}/oauth/token"}
             if self.userinfo_endpoint:
                 metadata["userinfo_endpoint"] = self.userinfo_endpoint
+            if self.metadata_padding:
+                metadata["padding"] = "x" * self.metadata_padding
             return httpx.Response(200, json=metadata)
         if request.url.path == "/auth/v1/oauth/userinfo":
             if self.userinfo_status != 200:
@@ -67,11 +81,19 @@ class StandInServer:
 class Storage:
     """The caller's saved sign-in, as the token storage reads it."""
 
-    def __init__(self, token="token-email", status="valid", updated_at=SIGNED_IN, later_updated_at=None):
+    def __init__(self, token="token-email", status="valid", updated_at=SIGNED_IN, later_updated_at=None, learned_iss=ISSUER, team="team-1"):
         self.token = ValidationToken(status, token)
         self.updated_at = updated_at
         self.later_updated_at = later_updated_at
+        self.learned_iss = learned_iss
+        self.team = team
         self.reads = 0
+
+    def _get_team_id(self, gateway_id, app_user_email):
+        return self.team
+
+    async def get_user_learned_audience(self, gateway_id, app_user_email):
+        return ("aud", self.learned_iss)
 
     async def read_validation_token(self, gateway_id, app_user_email):
         return self.token
@@ -118,7 +140,8 @@ def server():
     stand_in = StandInServer()
 
     @asynccontextmanager
-    async def client(*_args, **_kwargs):
+    async def client(*_args, **kwargs):
+        stand_in.verify.append(kwargs.get("verify"))
         async with httpx.AsyncClient(transport=httpx.MockTransport(stand_in.handle)) as c:
             yield c
 
@@ -139,6 +162,86 @@ async def test_names_the_account_with_its_email(server):
 @pytest.mark.asyncio
 async def test_a_sign_in_without_the_email_scope_names_only_its_sub(server):
     assert await ask(Storage("token-openid")) == {"sub": "u-2"}
+
+
+@pytest.mark.asyncio
+async def test_an_email_the_server_says_is_unverified_is_not_named(server):
+    assert await ask(Storage("token-unverified")) == {"sub": "u-3"}
+
+
+@pytest.mark.asyncio
+async def test_an_email_the_server_says_nothing_about_is_named(server):
+    assert await ask(Storage("token-silent")) == {"sub": "u-4", "email": "silent@example.com"}
+
+
+@pytest.mark.asyncio
+async def test_every_request_verifies_the_certificate(server):
+    await ask(Storage())
+    assert server.verify and all(v is True for v in server.verify)
+
+
+@pytest.mark.asyncio
+async def test_an_issuer_changed_after_the_sign_in_gets_no_request(server):
+    """An editor points the entry at another issuer; the saved sign-in recorded the first one."""
+    assert await ask(Storage(), oauth_config={"issuer": "https://other.example.net/auth/v1"}) is None
+    assert server.requests == []
+
+
+@pytest.mark.asyncio
+async def test_a_sign_in_that_recorded_no_issuer_gets_no_request(server):
+    assert await ask(Storage(learned_iss=None)) is None
+    assert server.requests == []
+
+
+@pytest.mark.asyncio
+async def test_an_http_issuer_is_refused(server):
+    http_issuer = "http://as.example.com/auth/v1"
+    assert await ask(Storage(learned_iss=http_issuer), oauth_config={"issuer": http_issuer}) is None
+    assert server.requests == []
+
+
+@pytest.mark.asyncio
+async def test_an_http_userinfo_endpoint_gets_no_token(server):
+    server.userinfo_endpoint = "http://as.example.com/auth/v1/oauth/userinfo"
+    assert await ask(Storage()) is None
+    assert server.tokens_sent() == []
+
+
+@pytest.mark.asyncio
+async def test_a_userinfo_answer_past_the_byte_cap_names_nobody(server):
+    assert await ask(Storage("token-huge")) is None
+    assert server.tokens_sent() == [("as.example.com", "/auth/v1/oauth/userinfo")]
+
+
+@pytest.mark.asyncio
+async def test_metadata_past_the_byte_cap_sends_no_token(server):
+    server.metadata_padding = 100_000
+    assert await ask(Storage()) is None
+    assert server.tokens_sent() == []
+
+
+@pytest.mark.asyncio
+async def test_a_slow_server_is_given_up_on_at_the_deadline(server, monkeypatch):
+    monkeypatch.setattr(oauth_account, "_DEADLINE_SECONDS", 0.2)
+    server.delay = 5.0
+    started = asyncio.get_running_loop().time()
+    assert await ask(Storage()) is None
+    assert asyncio.get_running_loop().time() - started < 2
+
+
+@pytest.mark.asyncio
+async def test_a_kept_answer_is_not_given_for_a_token_no_longer_valid(server):
+    storage = Storage("token-email")
+    assert await ask(storage) == {"sub": "u-1", "email": "maxine@example.com"}
+    storage.token = ValidationToken("expired", "token-email")
+    assert await ask(storage) is None
+
+
+@pytest.mark.asyncio
+async def test_a_kept_answer_belongs_to_one_team(server):
+    assert await ask(Storage("token-email", team="team-1")) == {"sub": "u-1", "email": "maxine@example.com"}
+    assert await ask(Storage("token-openid", team="team-2")) == {"sub": "u-2"}
+    assert len(server.tokens_sent()) == 2
 
 
 @pytest.mark.asyncio
