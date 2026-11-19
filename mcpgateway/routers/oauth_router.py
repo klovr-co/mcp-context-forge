@@ -16,6 +16,7 @@ import asyncio
 from html import escape
 import json
 import logging
+import os
 import re
 import secrets
 from typing import Annotated, Any, Dict, Optional
@@ -375,6 +376,64 @@ def _popup_notification_script(nonce: str, payload: dict) -> str:
     # (the exact popup reference), so only the window that initiated the flow can
     # act on the result.
     return f"<script nonce=\"{safe_nonce}\">(function(){{if(window.opener&&!window.opener.closed){{window.opener.postMessage({safe_payload},'*');window.close();}}}})()</script>"
+
+
+def _signin_done_url() -> Optional[str]:
+    """Where a person goes back to after signing in to a gateway, from ``OAUTH_SIGNIN_DONE_URL``.
+
+    Set when people start sign-ins from another app (for example a connectors page), so the
+    callback shows a plain "Signed in" page with a link back instead of the admin page's
+    Fetch Tools step. Only an absolute http(s) URL counts.
+
+    Returns:
+        The URL, or None when unset or not an http(s) URL.
+    """
+    url = os.environ.get("OAUTH_SIGNIN_DONE_URL", "").strip()
+    parsed = urlparse(url)
+    return url if parsed.scheme in ("http", "https") and parsed.netloc else None
+
+
+def _signin_done_response(gateway_name: str, done_url: str) -> HTMLResponse:
+    """A plain page after a successful sign-in, linking back to the app the person came from.
+
+    Args:
+        gateway_name: The gateway the person signed in to.
+        done_url: Where to send them back to.
+
+    Returns:
+        HTMLResponse with no script.
+    """
+    name = escape(str(gateway_name))
+    link = escape(done_url, quote=True)
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signed in</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 64px 16px; color: #111827; background: #ffffff; }}
+  main {{ max-width: 420px; margin: 0 auto; }}
+  h1 {{ font-size: 20px; font-weight: 600; margin: 0 0 8px; }}
+  p {{ font-size: 15px; line-height: 1.5; margin: 0 0 24px; color: #4b5563; }}
+  a {{ display: inline-block; padding: 10px 16px; border-radius: 6px; background: #111827; color: #ffffff; text-decoration: none; font-size: 15px; }}
+  @media (prefers-color-scheme: dark) {{
+    body {{ background: #111827; color: #f9fafb; }}
+    p {{ color: #d1d5db; }}
+    a {{ background: #f9fafb; color: #111827; }}
+  }}
+</style>
+</head>
+<body>
+<main>
+  <h1>Signed in</h1>
+  <p>You're signed in to {name}. You can close this tab.</p>
+  <a href="{link}">Go back to Hover Workspace</a>
+</main>
+</body>
+</html>""",
+    )
 
 
 def _popup_callback_response(nonce: str, payload: dict, status_code: int = 200, extra_body: str = "") -> HTMLResponse:
@@ -1149,6 +1208,11 @@ async def oauth_callback(
                 {"type": "oauth_callback", "status": "success", "gatewayId": str(gateway_id), "gatewayName": str(gateway.name)},
                 extra_body="<p>Authorization successful. This window will close automatically.</p>",
             )
+
+        # Started from another app: a plain page with a link back, not the admin page's Fetch Tools step.
+        done_url = _signin_done_url()
+        if done_url:
+            return _signin_done_response(gateway.name, done_url)
 
         # Create a temporary session JWT (5 minutes) for the fetch-tools page.
         # For non-admins: scoped to team_id from the OAuth state (or shared if team_id is None).
