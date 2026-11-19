@@ -1113,6 +1113,36 @@ class ToolValidationError(ToolError):
     """
 
 
+def _signed_out_message(gateway_name: str, gateway_id: str) -> str:
+    """What a person is told when they call a tool of an OAuth gateway they aren't signed in to.
+
+    With ``OAUTH_SIGNIN_PAGE_URL`` set (an http(s) address where people sign in to their
+    connectors), the message points there instead of the gateway's own authorize address.
+
+    Args:
+        gateway_name: The gateway's name.
+        gateway_id: The gateway's ID.
+
+    Returns:
+        The message.
+
+    Examples:
+        >>> import os
+        >>> os.environ.pop("OAUTH_SIGNIN_PAGE_URL", None) and None
+        >>> _signed_out_message("slack", "g1")
+        'Please authorize slack first. Visit /oauth/authorize/g1 to complete OAuth flow.'
+        >>> os.environ["OAUTH_SIGNIN_PAGE_URL"] = "https://app.example.org/connectors"
+        >>> _signed_out_message("slack", "g1")
+        "You're not signed in to slack. Sign in at https://app.example.org/connectors, then try again."
+        >>> del os.environ["OAUTH_SIGNIN_PAGE_URL"]
+    """
+    page = os.environ.get("OAUTH_SIGNIN_PAGE_URL", "").strip()
+    parsed = urlparse(page)
+    if parsed.scheme in ("http", "https") and parsed.netloc:
+        return f"You're not signed in to {gateway_name}. Sign in at {page}, then try again."
+    return f"Please authorize {gateway_name} first. Visit /oauth/authorize/{gateway_id} to complete OAuth flow."
+
+
 class ToolInvocationError(ToolError):
     """Raised when tool invocation fails.
 
@@ -7094,7 +7124,7 @@ class ToolService(BaseService):
                     # while still allowing legitimate plugin-injected auth (e.g. Vault) to satisfy
                     # the requirement.
                     if oauth_authcode_no_db_token and not any(hk.lower() == "authorization" for hk in headers):
-                        raise ToolInvocationError(f"Please authorize {gateway_name} first. Visit /oauth/authorize/{gateway_id_str} to complete OAuth flow.")
+                        raise ToolInvocationError(_signed_out_message(gateway_name, gateway_id_str))
 
                     with create_child_span("tool.gateway_call", {"tool.name": name, "tool.id": tool_id, "tool.integration_type": "MCP"}):
                         tool_call_result = ToolResult(content=[TextContent(text="", type="text")])
