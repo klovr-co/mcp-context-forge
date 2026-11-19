@@ -1236,7 +1236,13 @@ class OAuthManager:
         return {**credentials, "redirect_uri": resolved}
 
     async def initiate_authorization_code_flow(
-        self, gateway_id: str, credentials: Dict[str, Any], app_user_email: str = None, popup: bool = False, default_redirect_uri: Optional[str] = None
+        self,
+        gateway_id: str,
+        credentials: Dict[str, Any],
+        app_user_email: str = None,
+        popup: bool = False,
+        default_redirect_uri: Optional[str] = None,
+        return_to_app: bool = False,
     ) -> Dict[str, str]:
         """Initiate Authorization Code flow with PKCE and return authorization URL.
 
@@ -1246,6 +1252,8 @@ class OAuthManager:
             app_user_email: ContextForge user email to associate with tokens
             popup: When True, the state token is prefixed with ``popup.`` so the
                 callback endpoint knows to respond with postMessage instead of HTML.
+            return_to_app: When True (and not popup), the state token is prefixed with ``app.`` so the
+                callback sends the person back to the app that started the sign-in.
             default_redirect_uri: Fallback used by :meth:`_apply_default_redirect_uri` when
                 *credentials* carries no ``redirect_uri`` (defence-in-depth; today's router
                 caller already resolves one before DCR runs, so this is normally a no-op).
@@ -1260,6 +1268,8 @@ class OAuthManager:
 
         # Generate state parameter with user context for CSRF protection
         state = self._generate_state(gateway_id, app_user_email, popup=popup)
+        if return_to_app and not popup:
+            state = f"app.{state}"
 
         # Extract team_id from TokenStorageService user_context
         # AUTHORITY DECISION: For multi-team tokens, use teams[0] as the effective team
