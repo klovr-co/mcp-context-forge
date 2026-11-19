@@ -33,7 +33,7 @@ from mcpgateway.auth_context import get_user_email
 from mcpgateway.common.query_params import QueryErrorCode
 from mcpgateway.common.validators import SecurityValidator
 from mcpgateway.config import settings
-from mcpgateway.db import Gateway, get_db, Permissions
+from mcpgateway.db import Gateway, get_db, OAuthToken, Permissions
 from mcpgateway.middleware.rbac import get_current_user_with_permissions, require_permission
 from mcpgateway.middleware.token_scoping import ResourceOwnershipResult, token_scoping_middleware
 from mcpgateway.schemas import EmailUserResponse
@@ -1613,6 +1613,28 @@ async def get_oauth_status(
         raise HTTPException(status_code=500, detail="Failed to get OAuth status")
 
 
+async def _caller_login_stored(db: Session, token_storage: TokenStorageService, gateway_id: str, email: str) -> bool:
+    """Whether a login is stored for this person and gateway, read so that a failed read raises.
+
+    The database backend's own revoke and lookup swallow errors (they roll back and answer
+    False or None), which would make "could not delete" look like "nothing to delete". So
+    with the database backend this reads the row directly; a database error propagates.
+
+    Args:
+        db: Database session
+        token_storage: Token storage for the caller (used for non-database backends)
+        gateway_id: ID of the gateway
+        email: The caller's email
+
+    Returns:
+        True when a login is stored.
+    """
+    if settings.oauth_token_backend == "database":
+        row = db.execute(select(OAuthToken.id).where(OAuthToken.gateway_id == gateway_id, OAuthToken.app_user_email == email)).first()
+        return row is not None
+    return await token_storage.get_token_info(gateway_id, email) is not None
+
+
 @oauth_router.delete("/tokens/{gateway_id}")
 @require_permission(Permissions.GATEWAYS_READ)
 async def sign_out_of_gateway(
@@ -1625,7 +1647,8 @@ async def sign_out_of_gateway(
 
     Only ever the caller's own login, derived from the authenticated identity, never a
     client-supplied user. Other people's logins and the gateway itself are untouched. The
-    gateway asks the caller to authorize again on their next call.
+    gateway asks the caller to authorize again on their next call. The answer is only a
+    success once the login is confirmed gone; anything else is a 500, never a 200.
 
     Args:
         gateway_id: ID of the gateway
@@ -1637,7 +1660,7 @@ async def sign_out_of_gateway(
         ``{"gateway_id": ..., "signed_out": bool}``; ``signed_out`` is False when no login was stored.
 
     Raises:
-        HTTPException: If not authenticated, not authorized, gateway not found, or error
+        HTTPException: If not authenticated, not authorized, gateway not found, or the login could not be removed
     """
     gateway = db.execute(select(Gateway).where(Gateway.id == gateway_id)).scalar_one_or_none()
     if not gateway:
@@ -1647,12 +1670,19 @@ async def sign_out_of_gateway(
     requester_email = get_user_email(current_user)
     if requester_email == "unknown" or not requester_email.strip():
         raise HTTPException(status_code=401, detail="Authentication required")
+    token_storage = TokenStorageService(db, _build_user_context(current_user))
     try:
-        signed_out = await TokenStorageService(db, _build_user_context(current_user)).revoke_user_tokens(gateway_id, requester_email)
+        if not await _caller_login_stored(db, token_storage, gateway_id, requester_email):
+            return {"gateway_id": gateway_id, "signed_out": False}
+        await token_storage.revoke_user_tokens(gateway_id, requester_email)
+        still_stored = await _caller_login_stored(db, token_storage, gateway_id, requester_email)
     except Exception as e:
         logger.exception("OAuth sign-out failed for gateway=%s user=%s: %s", gateway_id, requester_email, str(e))
         raise HTTPException(status_code=500, detail="Failed to sign out of gateway")
-    return {"gateway_id": gateway_id, "signed_out": bool(signed_out)}
+    if still_stored:
+        logger.error("OAuth sign-out left the login in place for gateway=%s user=%s", gateway_id, requester_email)
+        raise HTTPException(status_code=500, detail="Failed to sign out of gateway")
+    return {"gateway_id": gateway_id, "signed_out": True}
 
 
 OAUTH_STATUS_BATCH_MAX_IDS = 100
