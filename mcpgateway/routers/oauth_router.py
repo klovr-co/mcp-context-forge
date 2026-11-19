@@ -20,7 +20,7 @@ import os
 import re
 import secrets
 from typing import Annotated, Any, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 # Third-Party
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -393,47 +393,38 @@ def _signin_done_url() -> Optional[str]:
     return url if parsed.scheme in ("http", "https") and parsed.netloc else None
 
 
-def _signin_done_response(gateway_name: str, done_url: str) -> HTMLResponse:
-    """A plain page after a successful sign-in, linking back to the app the person came from.
+APP_SIGNIN_STATE_PREFIX = "app."
+APP_SIGNIN_REASONS = ("denied", "expired", "provider_error", "unknown")
+
+
+def _back_to_app(done_url: str, result: str, reason: Optional[str] = None, gateway_id: Optional[str] = None) -> RedirectResponse:
+    """Send a person back to the app their sign-in started from, with only a result code.
+
+    The address comes from ``OAUTH_SIGNIN_DONE_URL`` (never from the request), so this can't
+    be turned into an open redirect. No provider text, token or code goes into the address.
 
     Args:
-        gateway_name: The gateway the person signed in to.
-        done_url: Where to send them back to.
+        done_url: Where to send them, from ``_signin_done_url()``.
+        result: ``ok`` or ``failed``.
+        reason: For ``failed``, one of ``APP_SIGNIN_REASONS``.
+        gateway_id: The gateway, when known.
 
     Returns:
-        HTMLResponse with no script.
+        A 302 redirect.
+
+    Examples:
+        >>> _back_to_app("https://app.example.org/connectors/signed-in", "ok", gateway_id="g1").headers["location"]
+        'https://app.example.org/connectors/signed-in?result=ok&gateway=g1'
+        >>> _back_to_app("https://a.org/back?x=1", "failed", "denied").headers["location"]
+        'https://a.org/back?x=1&result=failed&reason=denied'
     """
-    name = escape(str(gateway_name))
-    link = escape(done_url, quote=True)
-    return HTMLResponse(
-        content=f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Signed in</title>
-<style>
-  body {{ font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 64px 16px; color: #111827; background: #ffffff; }}
-  main {{ max-width: 420px; margin: 0 auto; }}
-  h1 {{ font-size: 20px; font-weight: 600; margin: 0 0 8px; }}
-  p {{ font-size: 15px; line-height: 1.5; margin: 0 0 24px; color: #4b5563; }}
-  a {{ display: inline-block; padding: 10px 16px; border-radius: 6px; background: #111827; color: #ffffff; text-decoration: none; font-size: 15px; }}
-  @media (prefers-color-scheme: dark) {{
-    body {{ background: #111827; color: #f9fafb; }}
-    p {{ color: #d1d5db; }}
-    a {{ background: #f9fafb; color: #111827; }}
-  }}
-</style>
-</head>
-<body>
-<main>
-  <h1>Signed in</h1>
-  <p>You're signed in to {name}. You can close this tab.</p>
-  <a href="{link}">Go back to Hover Workspace</a>
-</main>
-</body>
-</html>""",
-    )
+    query = {"result": result}
+    if result != "ok":
+        query["reason"] = reason if reason in APP_SIGNIN_REASONS else "unknown"
+    if gateway_id:
+        query["gateway"] = str(gateway_id)
+    sep = "&" if urlparse(done_url).query else "?"
+    return RedirectResponse(url=f"{done_url}{sep}{urlencode(query)}", status_code=302)
 
 
 def _popup_callback_response(nonce: str, payload: dict, status_code: int = 200, extra_body: str = "") -> HTMLResponse:
@@ -716,6 +707,10 @@ async def initiate_oauth_flow(
     request: Request,
     current_user: EmailUserResponse = Depends(get_current_user_with_permissions),
     db: Session = Depends(get_db),
+    return_to_app: bool = Query(
+        False,
+        description="Set by an app that starts a person's sign-in (OAUTH_SIGNIN_DONE_URL): the callback sends them back there with the result instead of showing a page",
+    ),
     popup: bool = Query(
         default=False,
         description="Set by the React UI when opening OAuth in a popup window; encodes a popup. prefix in the state token so the callback responds with postMessage instead of a full HTML page",
@@ -889,7 +884,7 @@ async def initiate_oauth_flow(
         user_context = _build_user_context(current_user, db=db)
 
         oauth_manager = OAuthManager(token_storage=TokenStorageService(db, user_context))
-        auth_data = await oauth_manager.initiate_authorization_code_flow(gateway_id, oauth_config, app_user_email=requester_email, popup=popup)
+        auth_data = await oauth_manager.initiate_authorization_code_flow(gateway_id, oauth_config, app_user_email=requester_email, popup=popup, return_to_app=return_to_app and not popup)
 
         logger.info(f"Initiated OAuth flow for gateway {SecurityValidator.sanitize_log_message(gateway_id)} by user {SecurityValidator.sanitize_log_message(requester_email)}")
 
@@ -967,6 +962,8 @@ async def oauth_callback(
     # so we can detect it here without any additional storage lookups.
     del error_description
     is_popup = bool(state and isinstance(state, str) and state.startswith("popup."))
+    # Started by an app (return_to_app): every outcome goes back there as a redirect, never a page.
+    app_done_url = _signin_done_url() if (state and isinstance(state, str) and state.startswith(APP_SIGNIN_STATE_PREFIX)) else None
     csp_nonce = get_csp_nonce_from_request(request)
 
     try:
@@ -991,6 +988,8 @@ async def oauth_callback(
             error_text = escape(failure.code)
             description_text = escape(failure.message)
             logger.warning("OAuth provider callback failed: %s", failure.code)
+            if app_done_url:
+                return _back_to_app(app_done_url, "failed", "denied" if error == "access_denied" else "provider_error", gateway_id)
             if is_popup:
                 return _popup_callback_response(
                     csp_nonce,
@@ -1023,6 +1022,8 @@ async def oauth_callback(
 
         if not code:
             logger.warning("OAuth callback missing authorization code")
+            if app_done_url:
+                return _back_to_app(app_done_url, "failed", "provider_error", gateway_id)
             if is_popup:
                 return _popup_callback_response(
                     csp_nonce, {"type": "oauth_callback", "status": "error", "error": "missing_code", "errorDescription": "Missing authorization code in callback response."}, status_code=400
@@ -1048,6 +1049,8 @@ async def oauth_callback(
             Returns:
                 HTMLResponse: A 400 error page describing the invalid state.
             """
+            if app_done_url:
+                return _back_to_app(app_done_url, "failed", "expired", gateway_id)
             if is_popup:
                 return _popup_callback_response(
                     csp_nonce, {"type": "oauth_callback", "status": "error", "error": "invalid_state", "errorDescription": "Invalid OAuth state parameter."}, status_code=400
@@ -1209,10 +1212,9 @@ async def oauth_callback(
                 extra_body="<p>Authorization successful. This window will close automatically.</p>",
             )
 
-        # Started from another app: a plain page with a link back, not the admin page's Fetch Tools step.
-        done_url = _signin_done_url()
-        if done_url:
-            return _signin_done_response(gateway.name, done_url)
+        # Started from an app: back there with the result. Tools were already loaded with the sign-in.
+        if app_done_url:
+            return _back_to_app(app_done_url, "ok", gateway_id=gateway_id)
 
         # Create a temporary session JWT (5 minutes) for the fetch-tools page.
         # For non-admins: scoped to team_id from the OAuth state (or shared if team_id is None).
@@ -1397,6 +1399,8 @@ async def oauth_callback(
         failure = oauth_failure(e.error_code)
         logger.error("OAuth callback failed: %s", failure.code)
         _oauth_user_msg = failure.message
+        if app_done_url:
+            return _back_to_app(app_done_url, "failed", "provider_error", locals().get("gateway_id"))
         if is_popup:
             return _popup_callback_response(
                 csp_nonce,
@@ -1447,6 +1451,8 @@ async def oauth_callback(
         # Provider exception text can contain tokens or unsafe response bodies.
         logger.error("Unexpected error in OAuth callback: %s", type(e).__name__)
         _unexpected_user_msg = "An unexpected error occurred during authorization. Please contact your administrator."
+        if app_done_url:
+            return _back_to_app(app_done_url, "failed", "unknown", locals().get("gateway_id"))
         if is_popup:
             return _popup_callback_response(
                 csp_nonce,
