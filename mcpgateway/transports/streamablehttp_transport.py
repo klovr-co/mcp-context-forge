@@ -111,7 +111,7 @@ from mcpgateway.utils.log_sanitizer import sanitize_for_log
 from mcpgateway.utils.mcp_proxy_client import mcp_proxy_client
 from mcpgateway.utils.orjson_response import ORJSONResponse
 from mcpgateway.utils.passthrough_headers import compute_passthrough_headers_cached
-from mcpgateway.utils.server_urls import build_server_mcp_url
+from mcpgateway.utils.server_urls import build_global_mcp_resource_metadata_url, build_global_mcp_url, build_server_mcp_url, global_mcp_oauth_enabled
 from mcpgateway.utils.trace_context import set_trace_context_from_teams, set_trace_session_id
 from mcpgateway.utils.mcp_cursor import catalog_session_id
 from mcpgateway.utils.verify_credentials import (
@@ -1090,6 +1090,42 @@ def _build_resource_metadata_url(scope: Scope, server_id: str) -> str:
     if not base:
         return ""
     return f"{base}/.well-known/oauth-protected-resource/servers/{server_id}/mcp"
+
+
+def _is_global_mcp_path(path: str) -> bool:
+    """Whether ``path`` is the gateway's own MCP address (``/mcp`` or ``/mcp/``).
+
+    Args:
+        path: App-relative request path.
+
+    Returns:
+        True for ``/mcp`` and ``/mcp/``.
+
+    Examples:
+        >>> _is_global_mcp_path("/mcp/"), _is_global_mcp_path("/servers/x/mcp"), _is_global_mcp_path("/mcp/sse")
+        (True, False, False)
+    """
+    return path.rstrip("/") == "/mcp"
+
+
+def _bearer_challenge(path: str) -> str:
+    """The ``WWW-Authenticate`` value for a 401 on ``path``.
+
+    The gateway's own ``/mcp`` names its RFC 9728 metadata when
+    ``MCP_OAUTH_AUTHORIZATION_SERVERS`` is set, so MCP clients can find the
+    sign-in; everything else keeps a plain ``Bearer``.
+
+    Args:
+        path: App-relative request path.
+
+    Returns:
+        ``Bearer resource_metadata="..."`` or ``Bearer``.
+    """
+    if _is_global_mcp_path(path) and global_mcp_oauth_enabled():
+        metadata_url = build_global_mcp_resource_metadata_url()
+        if metadata_url:
+            return f'Bearer resource_metadata="{metadata_url}"'
+    return "Bearer"
 
 
 def _is_valid_audience(value: Any) -> bool:
@@ -6202,7 +6238,7 @@ class _StreamableHttpAuthHandler:
 
         # Strict mode: require authentication (non-OAuth servers get generic 401)
         if settings.mcp_require_auth:
-            return await self._send_error(detail="Authentication required for MCP endpoints", headers={"WWW-Authenticate": "Bearer"})
+            return await self._send_error(detail="Authentication required for MCP endpoints", headers={"WWW-Authenticate": _bearer_challenge(path)})
 
         # Permissive mode: allow unauthenticated access with public-only scope
         # Set context indicating unauthenticated user with public-only access (teams=[])
@@ -6477,7 +6513,7 @@ class _StreamableHttpAuthHandler:
             )
         except HTTPException as exc:
             logger.debug("MCP bearer token rejected: %s", sanitize_for_log(str(exc.detail)))
-            return await self._send_error(detail="Invalid authentication credentials", headers={"WWW-Authenticate": "Bearer"})
+            return await self._send_error(detail="Invalid authentication credentials", headers={"WWW-Authenticate": _bearer_challenge(self.request_path)})
         except SQLAlchemyError:
             # DB failure during team resolution or membership validation
             logger.exception("Database error during MCP authentication")
@@ -6584,6 +6620,8 @@ class _StreamableHttpAuthHandler:
         path = self.request_path
         match = _SERVER_ID_RE.search(path)
         if not match:
+            if _is_global_mcp_path(path) and global_mcp_oauth_enabled():
+                return await self._try_global_mcp_oauth_access_token(token, unverified)
             return OAuthAuthResult.NOT_APPLICABLE
 
         server_id = match.group("server_id")
@@ -6698,10 +6736,57 @@ class _StreamableHttpAuthHandler:
         except Exception:
             logger.warning("Failed to persist learned audience for server %s (caller guard)", server_id, exc_info=True)
 
+        return await self._set_oauth_user_context(claims)
+
+    async def _try_global_mcp_oauth_access_token(self, token: str, unverified: Dict[str, Any]) -> OAuthAuthResult:
+        """Verify an IdP access token on the gateway's own ``/mcp``.
+
+        Same checks as an ``oauth_enabled`` virtual server: the issuer must be
+        one of ``MCP_OAUTH_AUTHORIZATION_SERVERS``, the signature must verify
+        against its JWKS, the token must not be expired, and its audience
+        must be ``<APP_DOMAIN>/mcp``. The person is then resolved from the
+        database exactly as on a virtual server.
+
+        Args:
+            token: Raw Bearer token whose ``iss`` is not the gateway's own.
+            unverified: The token's claims, decoded without verification.
+
+        Returns:
+            ``NOT_APPLICABLE`` for an issuer outside the list (the caller's
+            normal checks decide), ``FAILED`` once a 401 has been sent,
+            ``SUCCESS`` with the user context set.
+        """
+        authorization_servers = list(settings.mcp_oauth_authorization_servers)
+        token_issuer = unverified.get("iss")
+        allowed = {s.rstrip("/") for s in authorization_servers if isinstance(s, str)}
+        if not isinstance(token_issuer, str) or token_issuer.rstrip("/") not in allowed:
+            return OAuthAuthResult.NOT_APPLICABLE
+
+        resource = build_global_mcp_url()
+        claims = await verify_oauth_access_token(token, authorization_servers, expected_audience=resource) if resource else None
+        # verify_exp only checks an exp that is present; a token for /mcp must carry one.
+        if claims is not None and not isinstance(claims.get("exp"), (int, float)):
+            claims = None
+        if claims is None:
+            await self._send_error(detail="Invalid OAuth access token", headers={"WWW-Authenticate": _bearer_challenge(self.request_path)})
+            return OAuthAuthResult.FAILED
+        return await self._set_oauth_user_context(claims)
+
+    async def _set_oauth_user_context(self, claims: Dict[str, Any]) -> OAuthAuthResult:
+        """Resolve the person named by verified OAuth claims and set the user context.
+
+        Args:
+            claims: Claims of an access token whose signature, issuer,
+                audience and expiry have been verified.
+
+        Returns:
+            ``SUCCESS`` with the user context set, or ``FAILED`` once an
+            error response has been sent.
+        """
         # Resolve user identity from verified claims
         user_email = claims.get("email") or claims.get("preferred_username") or claims.get("sub")
         if not user_email or not isinstance(user_email, str) or "@" not in user_email:
-            await self._send_error(detail="OAuth token missing valid email claim")
+            await self._send_error(detail="OAuth token missing valid email claim", headers={"WWW-Authenticate": _bearer_challenge(self.request_path)})
             return OAuthAuthResult.FAILED
 
         user_email = user_email.strip().lower()
@@ -6718,14 +6803,14 @@ class _StreamableHttpAuthHandler:
             return OAuthAuthResult.FAILED
         except Exception:
             logger.exception("Unexpected error looking up user %s during OAuth access-token verification", user_email)
-            await self._send_error(detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
+            await self._send_error(detail="Authentication failed", headers={"WWW-Authenticate": _bearer_challenge(self.request_path)})
             return OAuthAuthResult.FAILED
 
         if user_record is None:
-            await self._send_error(detail="User not registered in ContextForge. Please log in via SSO first.")
+            await self._send_error(detail="User not registered in ContextForge. Please log in via SSO first.", headers={"WWW-Authenticate": _bearer_challenge(self.request_path)})
             return OAuthAuthResult.FAILED
         if not user_record.is_active:
-            await self._send_error(detail="Account disabled")
+            await self._send_error(detail="Account disabled", headers={"WWW-Authenticate": _bearer_challenge(self.request_path)})
             return OAuthAuthResult.FAILED
 
         # Resolve teams from DB (same path as session tokens)
@@ -6738,7 +6823,7 @@ class _StreamableHttpAuthHandler:
             return OAuthAuthResult.FAILED
         except Exception:
             logger.exception("Unexpected error resolving teams for user %s during OAuth access-token verification", user_email)
-            await self._send_error(detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
+            await self._send_error(detail="Authentication failed", headers={"WWW-Authenticate": _bearer_challenge(self.request_path)})
             return OAuthAuthResult.FAILED
 
         # token_use="session" aligns with downstream RBAC gates (main.py, rbac.py,

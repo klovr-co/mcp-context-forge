@@ -26,6 +26,7 @@ from mcpgateway.db import get_db
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.server_service import ServerError, ServerNotFoundError, ServerService
 from mcpgateway.utils.log_sanitizer import sanitize_for_log
+from mcpgateway.utils.server_urls import build_global_mcp_url, global_mcp_oauth_enabled
 from mcpgateway.utils.verify_credentials import require_auth
 
 # Get logger instance
@@ -114,6 +115,27 @@ def validate_security_txt(content: str) -> Optional[str]:
     return "\n".join(validated)
 
 
+def _global_mcp_protected_resource_response() -> JSONResponse:
+    """RFC 9728 metadata for the gateway's own ``/mcp`` address.
+
+    Returns:
+        JSONResponse naming ``<APP_DOMAIN>/mcp`` and ``MCP_OAUTH_AUTHORIZATION_SERVERS``.
+
+    Raises:
+        HTTPException: 404 when ``/mcp`` OAuth isn't configured.
+    """
+    resource = build_global_mcp_url()
+    if not global_mcp_oauth_enabled() or not resource:
+        raise HTTPException(status_code=404, detail="OAuth is not configured for /mcp")
+    body = {
+        "resource": resource,
+        "authorization_servers": list(settings.mcp_oauth_authorization_servers),
+        "bearer_methods_supported": ["header"],
+        "scopes_supported": list(settings.mcp_oauth_scopes),
+    }
+    return JSONResponse(content=body, headers={"Cache-Control": f"public, max-age={settings.well_known_cache_max_age}"})
+
+
 @router.get("/.well-known/oauth-protected-resource/{path:path}")
 async def get_oauth_protected_resource_rfc9728(
     path: str,
@@ -155,6 +177,10 @@ async def get_oauth_protected_resource_rfc9728(
     """
     if not settings.well_known_enabled:
         raise HTTPException(status_code=404, detail="Not found")
+
+    # The gateway's own /mcp address (MCP_OAUTH_AUTHORIZATION_SERVERS).
+    if path.strip("/") == "mcp":
+        return _global_mcp_protected_resource_response()
 
     # Parse path to extract server_id with validation
     # Expected formats:
@@ -209,7 +235,9 @@ async def get_oauth_protected_resource(
     """
     DEPRECATED: OAuth 2.0 Protected Resource Metadata endpoint (query parameter based).
 
-    This endpoint is deprecated and non-compliant with RFC 9728. It returns 404.
+    This endpoint is deprecated and non-compliant with RFC 9728. It returns 404,
+    except that when ``MCP_OAUTH_AUTHORIZATION_SERVERS`` is set it serves the
+    metadata of the gateway's own ``/mcp`` address.
 
     RFC 9728 requires path-based discovery, not query parameters.
     Use the RFC 9728 compliant endpoint instead:
@@ -219,11 +247,18 @@ async def get_oauth_protected_resource(
         request: FastAPI request object (unused).
         server_id: Server ID query parameter (ignored).
 
+    Returns:
+        JSONResponse with ``/mcp``'s metadata, when ``/mcp`` offers OAuth.
+
     Raises:
-        HTTPException: Always raises 404 with deprecation notice.
+        HTTPException: 404 with deprecation notice otherwise.
     """
     if not settings.well_known_enabled:
         raise HTTPException(status_code=404, detail="Not found")
+
+    # Clients that look at the root first find /mcp's metadata, when /mcp offers OAuth.
+    if server_id is None and global_mcp_oauth_enabled():
+        return _global_mcp_protected_resource_response()
 
     logger.warning("Deprecated query-param OAuth metadata endpoint called. Use RFC 9728 compliant path-based endpoint: /.well-known/oauth-protected-resource/servers/{server_id}/mcp")
     raise HTTPException(

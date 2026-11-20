@@ -91,3 +91,56 @@ def build_server_display_url(server_id: str) -> str:
     root_path = str(getattr(settings, "app_root_path", "") or "").strip("/")
     base = f"{raw}/{root_path}" if root_path else raw
     return f"{base}/servers/{server_id}/mcp"
+
+
+def _app_base_url() -> str:
+    """Return ``settings.app_domain`` without a trailing slash, or ``""`` if unusable.
+
+    Returns:
+        The gateway's public base URL, or ``""``.
+    """
+    try:
+        return str(settings.app_domain).rstrip("/")
+    except (AttributeError, ValueError):
+        return ""
+
+
+def global_mcp_oauth_enabled() -> bool:
+    """Whether the gateway's own ``/mcp`` address offers OAuth sign-in (``MCP_OAUTH_AUTHORIZATION_SERVERS``).
+
+    Returns:
+        True when at least one authorization server is configured.
+    """
+    return bool(settings.mcp_oauth_authorization_servers)
+
+
+def build_global_mcp_url() -> str:
+    """The RFC 8707 resource of the gateway's own ``/mcp`` address, from ``settings.app_domain``.
+
+    Returns:
+        ``<app_domain>/mcp``, or ``""`` if ``settings.app_domain`` isn't usable.
+
+    Examples:
+        >>> from unittest.mock import patch
+        >>> with patch.object(settings, "app_domain", "https://gw.example.com/"):
+        ...     build_global_mcp_url()
+        'https://gw.example.com/mcp'
+    """
+    base = _app_base_url()
+    return f"{base}/mcp" if base else ""
+
+
+def build_global_mcp_resource_metadata_url() -> str:
+    """The RFC 9728 metadata address for the gateway's own ``/mcp``.
+
+    Returns:
+        ``<app_domain>/.well-known/oauth-protected-resource/mcp``, or ``""``.
+
+    Examples:
+        >>> from unittest.mock import patch
+        >>> with patch.object(settings, "app_domain", "https://gw.example.com"):
+        ...     build_global_mcp_resource_metadata_url()
+        'https://gw.example.com/.well-known/oauth-protected-resource/mcp'
+    """
+    base = _app_base_url()
+    return f"{base}/.well-known/oauth-protected-resource/mcp" if base else ""
