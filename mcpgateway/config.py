@@ -3346,6 +3346,17 @@ Disallow: /
     # Cache control for well-known files (seconds)
     well_known_cache_max_age: int = 3600  # 1 hour default
 
+    # OAuth sign-in on the gateway's own /mcp address (RFC 9728), as oauth_enabled virtual servers offer.
+    # Empty (the default): /mcp accepts only the gateway's own tokens, as before.
+    mcp_oauth_authorization_servers: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description="Authorization servers whose access tokens /mcp accepts and advertises (CSV or JSON list). The resource is <APP_DOMAIN>/mcp.",
+    )
+    mcp_oauth_scopes: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["openid", "profile", "email", "offline_access"],
+        description="Scopes listed in /mcp's protected-resource metadata (CSV or JSON list)",
+    )
+
     # ===================================
     # Performance / Startup Tuning
     # ===================================
@@ -3460,6 +3471,8 @@ Disallow: /
         "tool_description_forbidden_patterns",
         "root_allowed_schemes",
         "root_allowed_file_prefixes",
+        "mcp_oauth_authorization_servers",
+        "mcp_oauth_scopes",
         mode="before",
     )
     @classmethod
